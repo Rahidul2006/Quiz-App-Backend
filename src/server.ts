@@ -79,7 +79,7 @@ app.use("/api/quizzes", quizRoutes);
 // Error Middleware
 app.use(errorHandler);
 
-import { checkAndEndExpiredEvents } from "./controllers/eventController";
+import { checkAndEndExpiredActivities } from "./controllers/activityController";
 
 // Clean up any legacy demo data from database if present
 async function cleanupDemoData() {
@@ -103,8 +103,8 @@ const startServer = async () => {
     console.log(`🔌 [Socket.IO] Real-time engine ready for connections`);
   });
 
-  // Start background ticker to auto-end expired events (every 5 seconds)
-  setInterval(checkAndEndExpiredEvents, 5000);
+  // Start background ticker to auto-end expired activities (authoritative 1s tick)
+  setInterval(checkAndEndExpiredActivities, 1000);
 
   connectDB()
     .then(async (connected) => {

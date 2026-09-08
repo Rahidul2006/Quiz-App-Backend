@@ -16,7 +16,16 @@ export interface EventSettings {
 }
 
 export type ActivityType = 'poll' | 'word_cloud' | 'quiz';
-export type ActivityStatus = 'draft' | 'active' | 'ended';
+
+export type ActivityStatus =
+  | 'WAITING'
+  | 'LIVE'
+  | 'ENDED'
+  | 'draft'
+  | 'active'
+  | 'ended'
+  | 'waiting'
+  | 'live';
 
 export type PollType =
   | 'single'

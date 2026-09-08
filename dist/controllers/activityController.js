@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getParticipantResponse = exports.getResults = exports.submitResponse = exports.stopActivity = exports.launchActivity = exports.deleteActivity = exports.updateActivity = exports.createActivity = exports.getActivityById = exports.getActivities = void 0;
+exports.getParticipantResponse = exports.getResults = exports.submitResponse = exports.checkAndEndExpiredActivities = exports.stopActivity = exports.launchActivity = exports.deleteActivity = exports.updateActivity = exports.createActivity = exports.getActivityById = exports.getActivities = void 0;
 const Activity_1 = require("../models/Activity");
 const Event_1 = require("../models/Event");
 const PollResponse_1 = require("../models/PollResponse");
@@ -39,19 +39,24 @@ exports.getActivityById = getActivityById;
 const createActivity = async (req, res) => {
     try {
         const { eventId } = req.params;
-        const { type, title, settings, options, questions } = req.body;
+        const { type, title, duration, settings, options, questions } = req.body;
         if (!type || !title) {
             res.status(400).json({ message: "Activity type and title are required" });
             return;
         }
         const count = await Activity_1.Activity.countDocuments({ eventId });
+        const activityDuration = Math.max(5, Number(duration) || 30);
         const activity = await Activity_1.Activity.create({
             eventId,
             type,
             title: title.trim(),
             settings: settings || {},
             orderIndex: count,
-            status: "draft",
+            status: "WAITING",
+            duration: activityDuration,
+            startedAt: null,
+            endsAt: null,
+            stoppedAt: null,
             options: options || [],
             questions: questions || [],
         });
@@ -103,20 +108,31 @@ const launchActivity = async (req, res) => {
             res.status(404).json({ message: "Activity not found" });
             return;
         }
-        // Set other activities in this event to ended
-        await Activity_1.Activity.updateMany({ eventId: activity.eventId, _id: { $ne: id }, status: "active" }, { status: "ended" });
-        activity.status = "active";
+        // Set other activities in this event to ended (preserve single-active-activity model)
+        await Activity_1.Activity.updateMany({ eventId: activity.eventId, _id: { $ne: id }, status: { $in: ["active", "LIVE", "live"] } }, { status: "ENDED", stoppedAt: new Date() });
+        const durationSeconds = Math.max(5, Number(activity.duration) || 30);
+        const startedAt = new Date();
+        const endsAt = new Date(startedAt.getTime() + durationSeconds * 1000);
+        activity.status = "LIVE";
+        activity.duration = durationSeconds;
+        activity.startedAt = startedAt;
+        activity.endsAt = endsAt;
+        activity.stoppedAt = null;
         if (activity.type === "quiz") {
             activity.activeQuestionIndex = 0;
             activity.settings = { ...activity.settings, quiz_state: "answering" };
         }
         await activity.save();
         await Event_1.Event.findByIdAndUpdate(activity.eventId, { activeActivityId: activity._id });
-        // Emit Socket.IO event: activity:started
+        // Emit Socket.IO event: activity:started with authoritative timestamps
         (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:started", {
             activity: { ...activity.toObject(), id: activity._id },
+            serverTime: new Date(),
         });
-        res.json({ activity: { ...activity.toObject(), id: activity._id } });
+        res.json({
+            activity: { ...activity.toObject(), id: activity._id },
+            serverTime: new Date(),
+        });
     }
     catch (error) {
         res.status(500).json({ message: error.message });
@@ -131,20 +147,53 @@ const stopActivity = async (req, res) => {
             res.status(404).json({ message: "Activity not found" });
             return;
         }
-        activity.status = "ended";
+        const stoppedAt = new Date();
+        activity.status = "ENDED";
+        activity.stoppedAt = stoppedAt;
         await activity.save();
         await Event_1.Event.findByIdAndUpdate(activity.eventId, { activeActivityId: null });
         // Emit Socket.IO event: activity:closed
         (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:closed", {
             activityId: activity._id,
+            status: "ENDED",
+            stoppedAt,
+            serverTime: stoppedAt,
         });
-        res.json({ message: "Activity closed successfully" });
+        res.json({ message: "Activity closed successfully", activity: { ...activity.toObject(), id: activity._id } });
     }
     catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
 exports.stopActivity = stopActivity;
+const checkAndEndExpiredActivities = async () => {
+    try {
+        const now = new Date();
+        const activeActivities = await Activity_1.Activity.find({
+            status: { $in: ["active", "LIVE", "live"] },
+        });
+        for (const activity of activeActivities) {
+            if (activity.endsAt && new Date(activity.endsAt).getTime() <= now.getTime()) {
+                activity.status = "ENDED";
+                activity.stoppedAt = now;
+                await activity.save();
+                await Event_1.Event.findByIdAndUpdate(activity.eventId, { activeActivityId: null });
+                (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:closed", {
+                    activityId: activity._id.toString(),
+                    status: "ENDED",
+                    stoppedAt: now,
+                    reason: "timer_expired",
+                    serverTime: now,
+                });
+                console.log(`[Lifecycle] Activity ${activity._id} ("${activity.title}") auto-ENDED by authoritative timer.`);
+            }
+        }
+    }
+    catch (e) {
+        // Ignore ticker error
+    }
+};
+exports.checkAndEndExpiredActivities = checkAndEndExpiredActivities;
 const submitResponse = async (req, res) => {
     try {
         const { id } = req.params;

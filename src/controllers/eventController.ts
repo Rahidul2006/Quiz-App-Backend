@@ -150,7 +150,6 @@ export const updateEvent = async (req: Request, res: Response): Promise<void> =>
 export const startEvent = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const { duration } = req.body;
 
     const event = await Event.findById(id);
     if (!event) {
@@ -158,14 +157,12 @@ export const startEvent = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    const eventDuration = Number(duration) || Number(event.duration) || 30;
     const startedAt = new Date();
-    const endsAt = new Date(startedAt.getTime() + eventDuration * 60 * 1000);
 
+    // The Event remains LIVE indefinitely without a countdown or auto-expiry
     event.status = "LIVE";
-    event.duration = eventDuration;
     event.startedAt = startedAt;
-    event.endsAt = endsAt;
+    event.endsAt = null;
     event.stoppedAt = null;
 
     await event.save();
@@ -173,9 +170,7 @@ export const startEvent = async (req: Request, res: Response): Promise<void> => 
     const payload = {
       eventId: event._id.toString(),
       status: "LIVE",
-      duration: eventDuration,
       startedAt,
-      endsAt,
       serverTime: new Date(),
     };
 
@@ -204,8 +199,28 @@ export const stopEvent = async (req: Request, res: Response): Promise<void> => {
     const stoppedAt = new Date();
     event.status = "ENDED";
     event.stoppedAt = stoppedAt;
+    event.activeActivityId = null;
 
     await event.save();
+
+    // Rule 7: Event STOP should end/disable any currently running activity appropriately
+    const activeActivities = await Activity.find({
+      eventId: event._id,
+      status: { $in: ["active", "LIVE", "live"] },
+    });
+
+    for (const act of activeActivities) {
+      act.status = "ENDED";
+      act.stoppedAt = stoppedAt;
+      await act.save();
+
+      emitToEventRoom(event._id.toString(), "activity:closed", {
+        activityId: act._id.toString(),
+        status: "ENDED",
+        stoppedAt,
+        serverTime: stoppedAt,
+      });
+    }
 
     const payload = {
       eventId: event._id.toString(),
@@ -237,31 +252,14 @@ export const getEventStatus = async (req: Request, res: Response): Promise<void>
     }
 
     const serverTime = new Date();
-    let remainingTimeMs = 0;
-    if ((event.status === "LIVE" || event.status === "live") && event.endsAt) {
-      remainingTimeMs = Math.max(0, new Date(event.endsAt).getTime() - serverTime.getTime());
-      if (remainingTimeMs === 0) {
-        event.status = "ENDED";
-        event.stoppedAt = serverTime;
-        await event.save();
-        emitToEventRoom(event._id.toString(), "event:ended", {
-          eventId: event._id.toString(),
-          status: "ENDED",
-          stoppedAt: serverTime,
-          reason: "timer_expired",
-        });
-      }
-    }
 
     res.json({
       id: event._id,
       status: event.status,
-      duration: event.duration || 30,
       startedAt: event.startedAt,
       endsAt: event.endsAt,
       stoppedAt: event.stoppedAt,
       serverTime,
-      remainingTimeMs,
       activeActivityId: event.activeActivityId,
     });
   } catch (error: any) {
@@ -377,26 +375,6 @@ export const getParticipants = async (req: Request, res: Response): Promise<void
 };
 
 export const checkAndEndExpiredEvents = async (): Promise<void> => {
-  try {
-    const now = new Date();
-    const liveEvents = await Event.find({
-      status: { $in: ["LIVE", "live", "active"] },
-      endsAt: { $ne: null, $lte: now },
-    });
-
-    for (const event of liveEvents) {
-      event.status = "ENDED";
-      event.stoppedAt = now;
-      await event.save();
-      emitToEventRoom(event._id.toString(), "event:ended", {
-        eventId: event._id.toString(),
-        status: "ENDED",
-        stoppedAt: now,
-        reason: "timer_expired",
-      });
-      console.log(`[Lifecycle] Event ${event._id} (${event.title}) automatically ENDED by timer.`);
-    }
-  } catch (e) {
-    // Ignore ticker error
-  }
+  // Event duration does not auto-end events anymore.
+  // Events stay LIVE indefinitely until manually stopped by Admin.
 };

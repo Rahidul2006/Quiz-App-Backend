@@ -37,7 +37,7 @@ export const getActivityById = async (req: Request, res: Response): Promise<void
 export const createActivity = async (req: Request, res: Response): Promise<void> => {
   try {
     const { eventId } = req.params;
-    const { type, title, settings, options, questions } = req.body;
+    const { type, title, duration, settings, options, questions } = req.body;
 
     if (!type || !title) {
       res.status(400).json({ message: "Activity type and title are required" });
@@ -45,6 +45,7 @@ export const createActivity = async (req: Request, res: Response): Promise<void>
     }
 
     const count = await Activity.countDocuments({ eventId });
+    const activityDuration = Math.max(5, Number(duration) || 30);
 
     const activity = await Activity.create({
       eventId,
@@ -52,7 +53,11 @@ export const createActivity = async (req: Request, res: Response): Promise<void>
       title: title.trim(),
       settings: settings || {},
       orderIndex: count,
-      status: "draft",
+      status: "WAITING",
+      duration: activityDuration,
+      startedAt: null,
+      endsAt: null,
+      stoppedAt: null,
       options: options || [],
       questions: questions || [],
     });
@@ -103,13 +108,22 @@ export const launchActivity = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    // Set other activities in this event to ended
+    // Set other activities in this event to ended (preserve single-active-activity model)
     await Activity.updateMany(
-      { eventId: activity.eventId, _id: { $ne: id }, status: "active" },
-      { status: "ended" }
+      { eventId: activity.eventId, _id: { $ne: id }, status: { $in: ["active", "LIVE", "live"] } },
+      { status: "ENDED", stoppedAt: new Date() }
     );
 
-    activity.status = "active";
+    const durationSeconds = Math.max(5, Number(activity.duration) || 30);
+    const startedAt = new Date();
+    const endsAt = new Date(startedAt.getTime() + durationSeconds * 1000);
+
+    activity.status = "LIVE";
+    activity.duration = durationSeconds;
+    activity.startedAt = startedAt;
+    activity.endsAt = endsAt;
+    activity.stoppedAt = null;
+
     if (activity.type === "quiz") {
       activity.activeQuestionIndex = 0;
       activity.settings = { ...activity.settings, quiz_state: "answering" };
@@ -118,12 +132,16 @@ export const launchActivity = async (req: Request, res: Response): Promise<void>
 
     await Event.findByIdAndUpdate(activity.eventId, { activeActivityId: activity._id });
 
-    // Emit Socket.IO event: activity:started
+    // Emit Socket.IO event: activity:started with authoritative timestamps
     emitToEventRoom(activity.eventId.toString(), "activity:started", {
       activity: { ...activity.toObject(), id: activity._id },
+      serverTime: new Date(),
     });
 
-    res.json({ activity: { ...activity.toObject(), id: activity._id } });
+    res.json({
+      activity: { ...activity.toObject(), id: activity._id },
+      serverTime: new Date(),
+    });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
@@ -138,7 +156,9 @@ export const stopActivity = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    activity.status = "ended";
+    const stoppedAt = new Date();
+    activity.status = "ENDED";
+    activity.stoppedAt = stoppedAt;
     await activity.save();
 
     await Event.findByIdAndUpdate(activity.eventId, { activeActivityId: null });
@@ -146,11 +166,45 @@ export const stopActivity = async (req: Request, res: Response): Promise<void> =
     // Emit Socket.IO event: activity:closed
     emitToEventRoom(activity.eventId.toString(), "activity:closed", {
       activityId: activity._id,
+      status: "ENDED",
+      stoppedAt,
+      serverTime: stoppedAt,
     });
 
-    res.json({ message: "Activity closed successfully" });
+    res.json({ message: "Activity closed successfully", activity: { ...activity.toObject(), id: activity._id } });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+export const checkAndEndExpiredActivities = async (): Promise<void> => {
+  try {
+    const now = new Date();
+    const activeActivities = await Activity.find({
+      status: { $in: ["active", "LIVE", "live"] },
+    });
+
+    for (const activity of activeActivities) {
+      if (activity.endsAt && new Date(activity.endsAt).getTime() <= now.getTime()) {
+        activity.status = "ENDED";
+        activity.stoppedAt = now;
+        await activity.save();
+
+        await Event.findByIdAndUpdate(activity.eventId, { activeActivityId: null });
+
+        emitToEventRoom(activity.eventId.toString(), "activity:closed", {
+          activityId: activity._id.toString(),
+          status: "ENDED",
+          stoppedAt: now,
+          reason: "timer_expired",
+          serverTime: now,
+        });
+
+        console.log(`[Lifecycle] Activity ${activity._id} ("${activity.title}") auto-ENDED by authoritative timer.`);
+      }
+    }
+  } catch (e: any) {
+    // Ignore ticker error
   }
 };
 

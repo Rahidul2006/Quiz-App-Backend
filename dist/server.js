@@ -67,7 +67,7 @@ app.use("/api/activities", activityRoutes_1.default);
 app.use("/api/quizzes", quizRoutes_1.default);
 // Error Middleware
 app.use(errorMiddleware_1.errorHandler);
-const eventController_1 = require("./controllers/eventController");
+const activityController_1 = require("./controllers/activityController");
 // Clean up any legacy demo data from database if present
 async function cleanupDemoData() {
     try {
@@ -89,8 +89,8 @@ const startServer = async () => {
         console.log(`🚀 [Backend] Server listening on http://localhost:${PORT}`);
         console.log(`🔌 [Socket.IO] Real-time engine ready for connections`);
     });
-    // Start background ticker to auto-end expired events (every 5 seconds)
-    setInterval(eventController_1.checkAndEndExpiredEvents, 5000);
+    // Start background ticker to auto-end expired activities (authoritative 1s tick)
+    setInterval(activityController_1.checkAndEndExpiredActivities, 1000);
     (0, db_1.connectDB)()
         .then(async (connected) => {
         if (connected) {

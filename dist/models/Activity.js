@@ -71,8 +71,24 @@ const ActivitySchema = new mongoose_1.Schema({
     },
     status: {
         type: String,
-        enum: ["draft", "active", "ended"],
-        default: "draft",
+        enum: ["WAITING", "LIVE", "ENDED", "draft", "active", "ended", "waiting", "live"],
+        default: "WAITING",
+    },
+    duration: {
+        type: Number,
+        default: 30, // in seconds
+    },
+    startedAt: {
+        type: Date,
+        default: null,
+    },
+    endsAt: {
+        type: Date,
+        default: null,
+    },
+    stoppedAt: {
+        type: Date,
+        default: null,
     },
     orderIndex: {
         type: Number,
