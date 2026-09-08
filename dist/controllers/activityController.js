@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getParticipantResponse = exports.getResults = exports.submitResponse = exports.checkAndEndExpiredActivities = exports.stopActivity = exports.launchActivity = exports.deleteActivity = exports.updateActivity = exports.createActivity = exports.getActivityById = exports.getActivities = void 0;
+exports.getParticipantResponse = exports.getResults = exports.submitResponse = exports.checkAndEndExpiredActivities = exports.restartActivity = exports.resumeActivity = exports.pauseActivity = exports.stopActivity = exports.launchActivity = exports.deleteActivity = exports.updateActivity = exports.createActivity = exports.getActivityById = exports.getActivities = void 0;
 const Activity_1 = require("../models/Activity");
 const Event_1 = require("../models/Event");
 const PollResponse_1 = require("../models/PollResponse");
@@ -166,6 +166,155 @@ const stopActivity = async (req, res) => {
     }
 };
 exports.stopActivity = stopActivity;
+const pauseActivity = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity) {
+            res.status(404).json({ message: "Activity not found" });
+            return;
+        }
+        const now = new Date();
+        let remaining = activity.remainingSeconds;
+        if (activity.endsAt) {
+            remaining = Math.max(1, Math.ceil((new Date(activity.endsAt).getTime() - now.getTime()) / 1000));
+        }
+        else if (!remaining) {
+            remaining = activity.duration || 30;
+        }
+        activity.status = "PAUSED";
+        activity.remainingSeconds = remaining;
+        activity.pausedAt = now;
+        activity.endsAt = null;
+        await activity.save();
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:paused", {
+            activityId: activity._id.toString(),
+            status: "PAUSED",
+            remainingSeconds: remaining,
+            pausedAt: now,
+            serverTime: now,
+        });
+        res.json({
+            message: "Activity paused successfully",
+            activity: { ...activity.toObject(), id: activity._id },
+            remainingSeconds: remaining,
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.pauseActivity = pauseActivity;
+const resumeActivity = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity) {
+            res.status(404).json({ message: "Activity not found" });
+            return;
+        }
+        // Set other activities in this event to ended
+        await Activity_1.Activity.updateMany({ eventId: activity.eventId, _id: { $ne: id }, status: { $in: ["active", "LIVE", "live"] } }, { status: "ENDED", stoppedAt: new Date() });
+        const remaining = Math.max(1, Number(activity.remainingSeconds) || Number(activity.duration) || 30);
+        const now = new Date();
+        const endsAt = new Date(now.getTime() + remaining * 1000);
+        activity.status = "LIVE";
+        activity.endsAt = endsAt;
+        activity.pausedAt = null;
+        await activity.save();
+        await Event_1.Event.findByIdAndUpdate(activity.eventId, { activeActivityId: activity._id });
+        const payload = {
+            activity: { ...activity.toObject(), id: activity._id },
+            serverTime: now,
+        };
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:resumed", payload);
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:started", payload);
+        res.json({
+            message: "Activity resumed successfully",
+            activity: { ...activity.toObject(), id: activity._id },
+            serverTime: now,
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.resumeActivity = resumeActivity;
+const restartActivity = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity) {
+            res.status(404).json({ message: "Activity not found" });
+            return;
+        }
+        // End other live activities in this event
+        await Activity_1.Activity.updateMany({ eventId: activity.eventId, _id: { $ne: id }, status: { $in: ["active", "LIVE", "live", "PAUSED", "paused"] } }, { status: "ENDED", stoppedAt: new Date() });
+        // Clear previous responses for this activity
+        const actIdStr = (activity._id || activity.id).toString();
+        await PollResponse_1.PollResponse.deleteMany({ activityId: actIdStr });
+        await WordCloudResponse_1.WordCloudResponse.deleteMany({ activityId: actIdStr });
+        await QuizResponse_1.QuizResponse.deleteMany({ activityId: actIdStr });
+        const durationSeconds = Math.max(5, Number(activity.duration) || 30);
+        const startedAt = new Date();
+        const endsAt = new Date(startedAt.getTime() + durationSeconds * 1000);
+        activity.status = "LIVE";
+        activity.duration = durationSeconds;
+        activity.startedAt = startedAt;
+        activity.endsAt = endsAt;
+        activity.stoppedAt = null;
+        activity.pausedAt = null;
+        activity.remainingSeconds = null;
+        if (activity.type === "quiz") {
+            activity.activeQuestionIndex = 0;
+            activity.settings = { ...activity.settings, quiz_state: "answering" };
+        }
+        await activity.save();
+        await Event_1.Event.findByIdAndUpdate(activity.eventId, { activeActivityId: activity._id });
+        // Emit cleared state to event room
+        if (activity.type === "poll") {
+            const emptyOptions = (activity.options || []).map((o) => ({
+                id: o._id ? o._id.toString() : (o.id || ""),
+                text: o.text,
+                votes: 0,
+                percentage: 0,
+                order_index: o.order_index,
+            }));
+            (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "poll:results_updated", {
+                activityId: activity._id.toString(),
+                options: emptyOptions,
+                total: 0,
+            });
+        }
+        else if (activity.type === "word_cloud") {
+            (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "wordcloud:updated", {
+                activityId: activity._id.toString(),
+                words: [],
+            });
+        }
+        else if (activity.type === "quiz") {
+            (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:leaderboard_updated", {
+                activityId: activity._id.toString(),
+                leaderboard: [],
+            });
+        }
+        const payload = {
+            activity: { ...activity.toObject(), id: activity._id },
+            serverTime: new Date(),
+        };
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:restarted", payload);
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:started", payload);
+        res.json({
+            message: "Activity restarted successfully",
+            activity: { ...activity.toObject(), id: activity._id },
+            serverTime: new Date(),
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.restartActivity = restartActivity;
 const checkAndEndExpiredActivities = async () => {
     try {
         const now = new Date();
@@ -205,6 +354,10 @@ const submitResponse = async (req, res) => {
         const { optionId, participantId, participantName, word, textResponse, ratingValue } = req.body;
         if (!participantId) {
             res.status(400).json({ message: "Participant identifier is required" });
+            return;
+        }
+        if (activity.status === "PAUSED" || activity.status === "paused") {
+            res.status(400).json({ message: "Activity is currently paused by organizer" });
             return;
         }
         // 1. POLL RESPONSE

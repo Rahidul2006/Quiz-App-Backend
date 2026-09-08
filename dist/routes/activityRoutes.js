@@ -9,6 +9,9 @@ router.patch("/:id", authMiddleware_1.requireAdmin, activityController_1.updateA
 router.delete("/:id", authMiddleware_1.requireAdmin, activityController_1.deleteActivity);
 router.post("/:id/launch", authMiddleware_1.requireAdmin, activityController_1.launchActivity);
 router.post("/:id/stop", authMiddleware_1.requireAdmin, activityController_1.stopActivity);
+router.post("/:id/pause", authMiddleware_1.requireAdmin, activityController_1.pauseActivity);
+router.post("/:id/resume", authMiddleware_1.requireAdmin, activityController_1.resumeActivity);
+router.post("/:id/restart", authMiddleware_1.requireAdmin, activityController_1.restartActivity);
 router.post("/:id/respond", activityController_1.submitResponse);
 router.get("/:id/results", activityController_1.getResults);
 router.get("/:id/participant-response", activityController_1.getParticipantResponse);

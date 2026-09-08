@@ -12,6 +12,8 @@ router.get("/:id", eventController_1.getEventById);
 router.get("/:id/status", eventController_1.getEventStatus);
 router.post("/:id/start", authMiddleware_1.requireAdmin, eventController_1.startEvent);
 router.post("/:id/stop", authMiddleware_1.requireAdmin, eventController_1.stopEvent);
+router.post("/:id/pause", authMiddleware_1.requireAdmin, eventController_1.pauseEvent);
+router.post("/:id/resume", authMiddleware_1.requireAdmin, eventController_1.resumeEvent);
 router.patch("/:id", authMiddleware_1.requireAdmin, eventController_1.updateEvent);
 router.delete("/:id", authMiddleware_1.requireAdmin, eventController_1.deleteEvent);
 // Participant routes (public)

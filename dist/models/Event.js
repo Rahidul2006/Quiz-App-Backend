@@ -54,7 +54,7 @@ const EventSchema = new mongoose_1.Schema({
     },
     status: {
         type: String,
-        enum: ["WAITING", "LIVE", "ENDED", "waiting", "live", "ended", "draft", "active", "paused"],
+        enum: ["WAITING", "LIVE", "ENDED", "PAUSED", "waiting", "live", "ended", "draft", "active", "paused"],
         default: "WAITING",
     },
     duration: {

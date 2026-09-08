@@ -10,6 +10,8 @@ export interface IActivity extends Document {
   startedAt?: Date | null;
   endsAt?: Date | null;
   stoppedAt?: Date | null;
+  pausedAt?: Date | null;
+  remainingSeconds?: number | null;
   orderIndex: number;
   settings: ActivitySettings;
   activeQuestionIndex: number;
@@ -68,7 +70,7 @@ const ActivitySchema = new Schema<IActivity>(
     },
     status: {
       type: String,
-      enum: ["WAITING", "LIVE", "ENDED", "draft", "active", "ended", "waiting", "live"],
+      enum: ["WAITING", "LIVE", "ENDED", "PAUSED", "draft", "active", "ended", "waiting", "live", "paused"],
       default: "WAITING",
     },
     duration: {
@@ -85,6 +87,14 @@ const ActivitySchema = new Schema<IActivity>(
     },
     stoppedAt: {
       type: Date,
+      default: null,
+    },
+    pausedAt: {
+      type: Date,
+      default: null,
+    },
+    remainingSeconds: {
+      type: Number,
       default: null,
     },
     orderIndex: {

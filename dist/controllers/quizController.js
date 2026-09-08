@@ -18,6 +18,10 @@ const answerQuizQuestion = async (req, res) => {
             res.status(404).json({ message: "Quiz activity not found" });
             return;
         }
+        if (activity.status === "PAUSED" || activity.status === "paused") {
+            res.status(400).json({ message: "Quiz activity is currently paused by organizer" });
+            return;
+        }
         const question = (activity.questions || []).find((q) => q._id?.toString() === questionId || q.id === questionId);
         if (!question) {
             res.status(404).json({ message: "Quiz question not found" });
