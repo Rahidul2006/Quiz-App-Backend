@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getParticipants = exports.joinEvent = exports.deleteEvent = exports.updateEvent = exports.createEvent = exports.getEventByCode = exports.getEventById = exports.getEvents = void 0;
+exports.checkAndEndExpiredEvents = exports.getParticipants = exports.joinEvent = exports.deleteEvent = exports.getEventStatus = exports.stopEvent = exports.startEvent = exports.updateEvent = exports.createEvent = exports.getEventByCode = exports.getEventById = exports.getEvents = void 0;
 const Event_1 = require("../models/Event");
 const Participant_1 = require("../models/Participant");
 const Activity_1 = require("../models/Activity");
@@ -83,17 +83,22 @@ const getEventByCode = async (req, res) => {
 exports.getEventByCode = getEventByCode;
 const createEvent = async (req, res) => {
     try {
-        const { title, description, settings, theme } = req.body;
+        const { title, description, settings, theme, duration } = req.body;
         if (!title || !title.trim()) {
             res.status(400).json({ message: "Event title is required" });
             return;
         }
         const joinCode = await generateJoinCode();
+        const eventDuration = Number(duration) || 30;
         const event = await Event_1.Event.create({
             title: title.trim(),
             description: description || "",
             joinCode,
-            status: "active",
+            status: "WAITING",
+            duration: eventDuration,
+            startedAt: null,
+            endsAt: null,
+            stoppedAt: null,
             theme: theme || "dark",
             settings: {
                 require_name: true,
@@ -129,6 +134,116 @@ const updateEvent = async (req, res) => {
     }
 };
 exports.updateEvent = updateEvent;
+const startEvent = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { duration } = req.body;
+        const event = await Event_1.Event.findById(id);
+        if (!event) {
+            res.status(404).json({ message: "Event not found" });
+            return;
+        }
+        const eventDuration = Number(duration) || Number(event.duration) || 30;
+        const startedAt = new Date();
+        const endsAt = new Date(startedAt.getTime() + eventDuration * 60 * 1000);
+        event.status = "LIVE";
+        event.duration = eventDuration;
+        event.startedAt = startedAt;
+        event.endsAt = endsAt;
+        event.stoppedAt = null;
+        await event.save();
+        const payload = {
+            eventId: event._id.toString(),
+            status: "LIVE",
+            duration: eventDuration,
+            startedAt,
+            endsAt,
+            serverTime: new Date(),
+        };
+        (0, socketHandler_1.emitToEventRoom)(event._id.toString(), "event:started", payload);
+        res.json({
+            ...event.toObject(),
+            id: event._id,
+            serverTime: new Date(),
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.startEvent = startEvent;
+const stopEvent = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const event = await Event_1.Event.findById(id);
+        if (!event) {
+            res.status(404).json({ message: "Event not found" });
+            return;
+        }
+        const stoppedAt = new Date();
+        event.status = "ENDED";
+        event.stoppedAt = stoppedAt;
+        await event.save();
+        const payload = {
+            eventId: event._id.toString(),
+            status: "ENDED",
+            stoppedAt,
+            reason: "admin_stopped",
+            serverTime: new Date(),
+        };
+        (0, socketHandler_1.emitToEventRoom)(event._id.toString(), "event:ended", payload);
+        res.json({
+            ...event.toObject(),
+            id: event._id,
+            serverTime: new Date(),
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.stopEvent = stopEvent;
+const getEventStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const event = await Event_1.Event.findById(id);
+        if (!event) {
+            res.status(404).json({ message: "Event not found" });
+            return;
+        }
+        const serverTime = new Date();
+        let remainingTimeMs = 0;
+        if ((event.status === "LIVE" || event.status === "live") && event.endsAt) {
+            remainingTimeMs = Math.max(0, new Date(event.endsAt).getTime() - serverTime.getTime());
+            if (remainingTimeMs === 0) {
+                event.status = "ENDED";
+                event.stoppedAt = serverTime;
+                await event.save();
+                (0, socketHandler_1.emitToEventRoom)(event._id.toString(), "event:ended", {
+                    eventId: event._id.toString(),
+                    status: "ENDED",
+                    stoppedAt: serverTime,
+                    reason: "timer_expired",
+                });
+            }
+        }
+        res.json({
+            id: event._id,
+            status: event.status,
+            duration: event.duration || 30,
+            startedAt: event.startedAt,
+            endsAt: event.endsAt,
+            stoppedAt: event.stoppedAt,
+            serverTime,
+            remainingTimeMs,
+            activeActivityId: event.activeActivityId,
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.getEventStatus = getEventStatus;
 const deleteEvent = async (req, res) => {
     try {
         const { id } = req.params;
@@ -217,3 +332,28 @@ const getParticipants = async (req, res) => {
     }
 };
 exports.getParticipants = getParticipants;
+const checkAndEndExpiredEvents = async () => {
+    try {
+        const now = new Date();
+        const liveEvents = await Event_1.Event.find({
+            status: { $in: ["LIVE", "live", "active"] },
+            endsAt: { $ne: null, $lte: now },
+        });
+        for (const event of liveEvents) {
+            event.status = "ENDED";
+            event.stoppedAt = now;
+            await event.save();
+            (0, socketHandler_1.emitToEventRoom)(event._id.toString(), "event:ended", {
+                eventId: event._id.toString(),
+                status: "ENDED",
+                stoppedAt: now,
+                reason: "timer_expired",
+            });
+            console.log(`[Lifecycle] Event ${event._id} (${event.title}) automatically ENDED by timer.`);
+        }
+    }
+    catch (e) {
+        // Ignore ticker error
+    }
+};
+exports.checkAndEndExpiredEvents = checkAndEndExpiredEvents;

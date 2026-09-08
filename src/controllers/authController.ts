@@ -59,33 +59,52 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // Support instant demo login if demo account requested
-    if (email === "admin@demo.org" && password === "demo123") {
-      let demoUser = await User.findOne({ email: "admin@demo.org" });
-      if (!demoUser) {
+    const inputEmail = email.trim().toLowerCase();
+    const envAdminEmail = (process.env.ADMIN_EMAIL || "admin@demo.org").trim().toLowerCase();
+    const envAdminPassword = process.env.ADMIN_PASSWORD || "demo123";
+    const envAdminName = process.env.ADMIN_NAME || "Administrator";
+
+    // 1. Check if matching env-configured admin credentials OR demo credentials
+    const isEnvAdmin = inputEmail === envAdminEmail && password === envAdminPassword;
+    const isFallbackDemo = inputEmail === "admin@demo.org" && password === "demo123";
+
+    if (isEnvAdmin || isFallbackDemo) {
+      const targetEmail = isEnvAdmin ? envAdminEmail : "admin@demo.org";
+      const targetName = isEnvAdmin ? envAdminName : "Demo Event Host";
+      const targetPassword = isEnvAdmin ? envAdminPassword : "demo123";
+
+      let adminUser = await User.findOne({ email: targetEmail });
+      if (!adminUser) {
         const salt = await bcrypt.genSalt(10);
-        const passwordHash = await bcrypt.hash("demo123", salt);
-        demoUser = await User.create({
-          email: "admin@demo.org",
+        const passwordHash = await bcrypt.hash(targetPassword, salt);
+        adminUser = await User.create({
+          email: targetEmail,
           passwordHash,
-          fullName: "Demo Event Host",
+          fullName: targetName,
           role: "admin",
         });
+      } else {
+        // Ensure role is admin
+        if (adminUser.role !== "admin") {
+          adminUser.role = "admin";
+          await adminUser.save();
+        }
       }
-      const token = generateToken(demoUser._id.toString(), demoUser.email, demoUser.role);
+
+      const token = generateToken(adminUser._id.toString(), adminUser.email, adminUser.role);
       res.json({
         token,
         user: {
-          id: demoUser._id,
-          email: demoUser.email,
-          fullName: demoUser.fullName,
-          role: demoUser.role,
+          id: adminUser._id.toString(),
+          email: adminUser.email,
+          fullName: adminUser.fullName,
+          role: adminUser.role,
         },
       });
       return;
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: inputEmail });
     if (!user) {
       res.status(401).json({ message: "Invalid email or password." });
       return;
@@ -102,7 +121,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     res.json({
       token,
       user: {
-        id: user._id,
+        id: user._id.toString(),
         email: user.email,
         fullName: user.fullName,
         role: user.role,
@@ -122,11 +141,33 @@ export const getMe = async (req: AuthRequest, res: Response): Promise<void> => {
 
     const user = await User.findById(req.user.id).select("-passwordHash");
     if (!user) {
+      // Check if user is the env admin or demo admin by email in verified JWT
+      const envAdminEmail = (process.env.ADMIN_EMAIL || "admin@demo.org").trim().toLowerCase();
+      const userEmail = req.user.email?.toLowerCase();
+      if (userEmail === envAdminEmail || userEmail === "admin@demo.org") {
+        res.json({
+          user: {
+            id: req.user.id,
+            email: req.user.email,
+            fullName: process.env.ADMIN_NAME || "Administrator",
+            role: "admin",
+          },
+        });
+        return;
+      }
+
       res.status(404).json({ message: "User not found" });
       return;
     }
 
-    res.json({ user });
+    res.json({
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+      },
+    });
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to retrieve user profile" });
   }

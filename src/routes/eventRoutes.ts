@@ -8,6 +8,9 @@ import {
   deleteEvent,
   joinEvent,
   getParticipants,
+  startEvent,
+  stopEvent,
+  getEventStatus,
 } from "../controllers/eventController";
 import { getActivities, createActivity } from "../controllers/activityController";
 
@@ -17,6 +20,9 @@ router.get("/", getEvents);
 router.post("/", createEvent);
 router.get("/code/:code", getEventByCode);
 router.get("/:id", getEventById);
+router.get("/:id/status", getEventStatus);
+router.post("/:id/start", startEvent);
+router.post("/:id/stop", stopEvent);
 router.patch("/:id", updateEvent);
 router.delete("/:id", deleteEvent);
 

@@ -7,6 +7,10 @@ export interface IEvent extends Document {
   joinCode: string;
   status: EventStatus;
   theme?: string;
+  duration?: number; // In minutes, default 30
+  startedAt?: Date | null;
+  endsAt?: Date | null;
+  stoppedAt?: Date | null;
   settings: EventSettings;
   activeActivityId?: mongoose.Types.ObjectId | null;
   createdBy?: mongoose.Types.ObjectId;
@@ -34,8 +38,24 @@ const EventSchema = new Schema<IEvent>(
     },
     status: {
       type: String,
-      enum: ["draft", "active", "paused", "ended"],
-      default: "active",
+      enum: ["WAITING", "LIVE", "ENDED", "waiting", "live", "ended", "draft", "active", "paused"],
+      default: "WAITING",
+    },
+    duration: {
+      type: Number,
+      default: 30, // 30 minutes default
+    },
+    startedAt: {
+      type: Date,
+      default: null,
+    },
+    endsAt: {
+      type: Date,
+      default: null,
+    },
+    stoppedAt: {
+      type: Date,
+      default: null,
     },
     theme: {
       type: String,

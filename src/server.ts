@@ -208,12 +208,17 @@ async function seedInitialData() {
   }
 }
 
+import { checkAndEndExpiredEvents } from "./controllers/eventController";
+
 // Start Server
 const startServer = async () => {
   server.listen(PORT, () => {
     console.log(`🚀 [Backend] Server listening on http://localhost:${PORT}`);
     console.log(`🔌 [Socket.IO] Real-time engine ready for connections`);
   });
+
+  // Start background ticker to auto-end expired events (every 5 seconds)
+  setInterval(checkAndEndExpiredEvents, 5000);
 
   connectDB()
     .then((connected) => {

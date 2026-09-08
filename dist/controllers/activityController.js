@@ -188,17 +188,24 @@ const submitResponse = async (req, res) => {
                     countMap[key] = (countMap[key] || 0) + 1;
                 }
             });
-            const updatedOptions = (activity.options || []).map((opt) => {
+            const updatedOptions = (activity.options || []).map((opt, index) => {
                 const optId = opt._id?.toString() || opt.id || "";
                 const votes = countMap[optId] || 0;
                 const percentage = total > 0 ? Math.round((votes / total) * 100) : 0;
                 return {
                     id: optId,
                     text: opt.text,
-                    order_index: opt.order_index,
+                    order_index: typeof opt.order_index === "number" ? opt.order_index : index,
                     votes,
                     percentage,
                 };
+            });
+            // Server-authoritative ranking: sort by votes desc, tie-break by original order_index
+            updatedOptions.sort((a, b) => {
+                if (b.votes !== a.votes) {
+                    return b.votes - a.votes;
+                }
+                return (a.order_index ?? 0) - (b.order_index ?? 0);
             });
             // Socket.IO Emit: poll:response and poll:results_updated
             (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "poll:response", {
@@ -277,17 +284,24 @@ const getResults = async (req, res) => {
                     countMap[key] = (countMap[key] || 0) + 1;
                 }
             });
-            const options = (activity.options || []).map((opt) => {
+            const options = (activity.options || []).map((opt, index) => {
                 const optId = opt._id?.toString() || opt.id || "";
                 const votes = countMap[optId] || 0;
                 const percentage = total > 0 ? Math.round((votes / total) * 100) : 0;
                 return {
                     id: optId,
                     text: opt.text,
-                    order_index: opt.order_index,
+                    order_index: typeof opt.order_index === "number" ? opt.order_index : index,
                     votes,
                     percentage,
                 };
+            });
+            // Server-authoritative ranking: sort by votes desc, tie-break by original order_index
+            options.sort((a, b) => {
+                if (b.votes !== a.votes) {
+                    return b.votes - a.votes;
+                }
+                return (a.order_index ?? 0) - (b.order_index ?? 0);
             });
             res.json({ type: "poll", options, total });
             return;

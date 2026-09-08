@@ -203,17 +203,25 @@ export const submitResponse = async (req: Request, res: Response): Promise<void>
         }
       });
 
-      const updatedOptions = (activity.options || []).map((opt) => {
+      const updatedOptions = (activity.options || []).map((opt, index) => {
         const optId = (opt as any)._id?.toString() || opt.id || "";
         const votes = countMap[optId] || 0;
         const percentage = total > 0 ? Math.round((votes / total) * 100) : 0;
         return {
           id: optId,
           text: opt.text,
-          order_index: opt.order_index,
+          order_index: typeof opt.order_index === "number" ? opt.order_index : index,
           votes,
           percentage,
         };
+      });
+
+      // Server-authoritative ranking: sort by votes desc, tie-break by original order_index
+      updatedOptions.sort((a, b) => {
+        if (b.votes !== a.votes) {
+          return b.votes - a.votes;
+        }
+        return (a.order_index ?? 0) - (b.order_index ?? 0);
       });
 
       // Socket.IO Emit: poll:response and poll:results_updated
@@ -304,17 +312,25 @@ export const getResults = async (req: Request, res: Response): Promise<void> => 
         }
       });
 
-      const options = (activity.options || []).map((opt) => {
+      const options = (activity.options || []).map((opt, index) => {
         const optId = (opt as any)._id?.toString() || opt.id || "";
         const votes = countMap[optId] || 0;
         const percentage = total > 0 ? Math.round((votes / total) * 100) : 0;
         return {
           id: optId,
           text: opt.text,
-          order_index: opt.order_index,
+          order_index: typeof opt.order_index === "number" ? opt.order_index : index,
           votes,
           percentage,
         };
+      });
+
+      // Server-authoritative ranking: sort by votes desc, tie-break by original order_index
+      options.sort((a, b) => {
+        if (b.votes !== a.votes) {
+          return b.votes - a.votes;
+        }
+        return (a.order_index ?? 0) - (b.order_index ?? 0);
       });
 
       res.json({ type: "poll", options, total });

@@ -190,12 +190,15 @@ async function seedInitialData() {
         console.warn("[MongoDB] Seed check:", err);
     }
 }
+const eventController_1 = require("./controllers/eventController");
 // Start Server
 const startServer = async () => {
     server.listen(PORT, () => {
         console.log(`🚀 [Backend] Server listening on http://localhost:${PORT}`);
         console.log(`🔌 [Socket.IO] Real-time engine ready for connections`);
     });
+    // Start background ticker to auto-end expired events (every 5 seconds)
+    setInterval(eventController_1.checkAndEndExpiredEvents, 5000);
     (0, db_1.connectDB)()
         .then((connected) => {
         if (connected) {

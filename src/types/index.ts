@@ -1,4 +1,13 @@
-export type EventStatus = 'draft' | 'active' | 'paused' | 'ended';
+export type EventStatus =
+  | 'WAITING'
+  | 'LIVE'
+  | 'ENDED'
+  | 'waiting'
+  | 'live'
+  | 'ended'
+  | 'draft'
+  | 'active'
+  | 'paused';
 
 export interface EventSettings {
   require_name?: boolean;

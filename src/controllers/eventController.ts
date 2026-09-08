@@ -87,19 +87,24 @@ export const getEventByCode = async (req: Request, res: Response): Promise<void>
 
 export const createEvent = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { title, description, settings, theme } = req.body;
+    const { title, description, settings, theme, duration } = req.body;
     if (!title || !title.trim()) {
       res.status(400).json({ message: "Event title is required" });
       return;
     }
 
     const joinCode = await generateJoinCode();
+    const eventDuration = Number(duration) || 30;
 
     const event = await Event.create({
       title: title.trim(),
       description: description || "",
       joinCode,
-      status: "active",
+      status: "WAITING",
+      duration: eventDuration,
+      startedAt: null,
+      endsAt: null,
+      stoppedAt: null,
       theme: theme || "dark",
       settings: {
         require_name: true,
@@ -129,6 +134,128 @@ export const updateEvent = async (req: Request, res: Response): Promise<void> =>
       return;
     }
     res.json({ ...updated.toObject(), id: updated._id });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const startEvent = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { duration } = req.body;
+
+    const event = await Event.findById(id);
+    if (!event) {
+      res.status(404).json({ message: "Event not found" });
+      return;
+    }
+
+    const eventDuration = Number(duration) || Number(event.duration) || 30;
+    const startedAt = new Date();
+    const endsAt = new Date(startedAt.getTime() + eventDuration * 60 * 1000);
+
+    event.status = "LIVE";
+    event.duration = eventDuration;
+    event.startedAt = startedAt;
+    event.endsAt = endsAt;
+    event.stoppedAt = null;
+
+    await event.save();
+
+    const payload = {
+      eventId: event._id.toString(),
+      status: "LIVE",
+      duration: eventDuration,
+      startedAt,
+      endsAt,
+      serverTime: new Date(),
+    };
+
+    emitToEventRoom(event._id.toString(), "event:started", payload);
+
+    res.json({
+      ...event.toObject(),
+      id: event._id,
+      serverTime: new Date(),
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const stopEvent = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+
+    const event = await Event.findById(id);
+    if (!event) {
+      res.status(404).json({ message: "Event not found" });
+      return;
+    }
+
+    const stoppedAt = new Date();
+    event.status = "ENDED";
+    event.stoppedAt = stoppedAt;
+
+    await event.save();
+
+    const payload = {
+      eventId: event._id.toString(),
+      status: "ENDED",
+      stoppedAt,
+      reason: "admin_stopped",
+      serverTime: new Date(),
+    };
+
+    emitToEventRoom(event._id.toString(), "event:ended", payload);
+
+    res.json({
+      ...event.toObject(),
+      id: event._id,
+      serverTime: new Date(),
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const getEventStatus = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const event = await Event.findById(id);
+    if (!event) {
+      res.status(404).json({ message: "Event not found" });
+      return;
+    }
+
+    const serverTime = new Date();
+    let remainingTimeMs = 0;
+    if ((event.status === "LIVE" || event.status === "live") && event.endsAt) {
+      remainingTimeMs = Math.max(0, new Date(event.endsAt).getTime() - serverTime.getTime());
+      if (remainingTimeMs === 0) {
+        event.status = "ENDED";
+        event.stoppedAt = serverTime;
+        await event.save();
+        emitToEventRoom(event._id.toString(), "event:ended", {
+          eventId: event._id.toString(),
+          status: "ENDED",
+          stoppedAt: serverTime,
+          reason: "timer_expired",
+        });
+      }
+    }
+
+    res.json({
+      id: event._id,
+      status: event.status,
+      duration: event.duration || 30,
+      startedAt: event.startedAt,
+      endsAt: event.endsAt,
+      stoppedAt: event.stoppedAt,
+      serverTime,
+      remainingTimeMs,
+      activeActivityId: event.activeActivityId,
+    });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
@@ -224,5 +351,30 @@ export const getParticipants = async (req: Request, res: Response): Promise<void
     );
   } catch (error: any) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+export const checkAndEndExpiredEvents = async (): Promise<void> => {
+  try {
+    const now = new Date();
+    const liveEvents = await Event.find({
+      status: { $in: ["LIVE", "live", "active"] },
+      endsAt: { $ne: null, $lte: now },
+    });
+
+    for (const event of liveEvents) {
+      event.status = "ENDED";
+      event.stoppedAt = now;
+      await event.save();
+      emitToEventRoom(event._id.toString(), "event:ended", {
+        eventId: event._id.toString(),
+        status: "ENDED",
+        stoppedAt: now,
+        reason: "timer_expired",
+      });
+      console.log(`[Lifecycle] Event ${event._id} (${event.title}) automatically ENDED by timer.`);
+    }
+  } catch (e) {
+    // Ignore ticker error
   }
 };

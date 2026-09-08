@@ -320,13 +320,17 @@ export const seedInMemoryStore = async (): Promise<void> => {
   const quizId = "65e000000000000000000004";
 
   // 1. Admin User
+  const adminEmail = (process.env.ADMIN_EMAIL || "admin@demo.org").trim().toLowerCase();
+  const adminPassword = process.env.ADMIN_PASSWORD || "demo123";
+  const adminName = process.env.ADMIN_NAME || "Administrator";
+
   const salt = await bcrypt.genSalt(10);
-  const passwordHash = await bcrypt.hash("demo123", salt);
+  const passwordHash = await bcrypt.hash(adminPassword, salt);
   await memoryUsers.create({
     _id: "65e000000000000000000000",
-    email: "admin@demo.org",
+    email: adminEmail,
     passwordHash,
-    fullName: "Demo Event Host",
+    fullName: adminName,
     role: "admin",
   });
 
@@ -336,14 +340,18 @@ export const seedInMemoryStore = async (): Promise<void> => {
     title: "React Kolkata Offline Meetup 2026",
     description: "Annual gathering of React, Next.js and frontend developers in Kolkata.",
     joinCode: "3157530",
-    status: "active",
+    status: "WAITING",
+    duration: 30,
+    startedAt: null,
+    endsAt: null,
+    stoppedAt: null,
     theme: "dark",
     settings: {
       require_name: true,
       allow_anonymous: false,
       show_live_results: true,
     },
-    activeActivityId: wordCloudId,
+    activeActivityId: null,
   });
 
   // 3. Word Cloud Activity
