@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getResults = exports.submitResponse = exports.stopActivity = exports.launchActivity = exports.deleteActivity = exports.updateActivity = exports.createActivity = exports.getActivityById = exports.getActivities = void 0;
+exports.getParticipantResponse = exports.getResults = exports.submitResponse = exports.stopActivity = exports.launchActivity = exports.deleteActivity = exports.updateActivity = exports.createActivity = exports.getActivityById = exports.getActivities = void 0;
 const Activity_1 = require("../models/Activity");
 const Event_1 = require("../models/Event");
 const PollResponse_1 = require("../models/PollResponse");
@@ -164,22 +164,26 @@ const submitResponse = async (req, res) => {
                 res.status(400).json({ message: "Option selection or response is required" });
                 return;
             }
-            // Check duplicate voting rule server-side
+            const actId = (activity._id || activity.id).toString();
+            const evId = (activity.eventId || activity.event_id || "").toString();
+            const optId = optionId ? optionId.toString() : undefined;
+            const partId = participantId ? participantId.toString() : "anon";
+            // Check duplicate voting rule server-side: enforce one vote per participant
             const allowMultiple = activity.settings?.allow_multiple;
             if (!allowMultiple) {
-                // Enforce one vote per participant
-                await PollResponse_1.PollResponse.deleteMany({ activityId: activity._id, participantId });
+                await PollResponse_1.PollResponse.deleteMany({ activityId: actId, participantId: partId });
             }
             const response = await PollResponse_1.PollResponse.create({
-                activityId: activity._id,
-                optionId,
-                participantId,
+                activityId: actId,
+                eventId: evId || undefined,
+                optionId: optId,
+                participantId: partId,
                 participantName: participantName || "Participant",
                 textResponse,
                 ratingValue,
             });
-            // Calculate real-time live aggregates
-            const allResponses = await PollResponse_1.PollResponse.find({ activityId: activity._id });
+            // Calculate real-time live aggregates from persistent database
+            const allResponses = await PollResponse_1.PollResponse.find({ activityId: actId });
             const total = allResponses.length;
             const countMap = {};
             allResponses.forEach((r) => {
@@ -189,11 +193,11 @@ const submitResponse = async (req, res) => {
                 }
             });
             const updatedOptions = (activity.options || []).map((opt, index) => {
-                const optId = opt._id?.toString() || opt.id || "";
-                const votes = countMap[optId] || 0;
+                const oId = opt._id?.toString() || opt.id || "";
+                const votes = countMap[oId] || 0;
                 const percentage = total > 0 ? Math.round((votes / total) * 100) : 0;
                 return {
-                    id: optId,
+                    id: oId,
                     text: opt.text,
                     order_index: typeof opt.order_index === "number" ? opt.order_index : index,
                     votes,
@@ -208,11 +212,11 @@ const submitResponse = async (req, res) => {
                 return (a.order_index ?? 0) - (b.order_index ?? 0);
             });
             // Socket.IO Emit: poll:response and poll:results_updated
-            (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "poll:response", {
-                response: { id: response._id, optionId, participantId },
+            (0, socketHandler_1.emitToEventRoom)(evId, "poll:response", {
+                response: { id: response._id, optionId: optId, participantId: partId },
             });
-            (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "poll:results_updated", {
-                activityId: activity._id,
+            (0, socketHandler_1.emitToEventRoom)(evId, "poll:results_updated", {
+                activityId: actId,
                 options: updatedOptions,
                 total,
             });
@@ -334,3 +338,33 @@ const getResults = async (req, res) => {
     }
 };
 exports.getResults = getResults;
+const getParticipantResponse = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { participantId } = req.query;
+        if (!participantId) {
+            res.status(400).json({ message: "participantId is required" });
+            return;
+        }
+        const actId = id.toString();
+        const partId = participantId.toString();
+        const existingVote = await PollResponse_1.PollResponse.findOne({
+            activityId: actId,
+            participantId: partId,
+        });
+        if (existingVote) {
+            res.json({
+                hasVoted: true,
+                optionId: existingVote.optionId ? existingVote.optionId.toString() : null,
+                textResponse: existingVote.textResponse,
+                ratingValue: existingVote.ratingValue,
+            });
+            return;
+        }
+        res.json({ hasVoted: false, optionId: null });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.getParticipantResponse = getParticipantResponse;

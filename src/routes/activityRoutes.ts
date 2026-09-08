@@ -7,6 +7,7 @@ import {
   stopActivity,
   submitResponse,
   getResults,
+  getParticipantResponse,
 } from "../controllers/activityController";
 
 const router = Router();
@@ -18,5 +19,7 @@ router.post("/:id/launch", launchActivity);
 router.post("/:id/stop", stopActivity);
 router.post("/:id/respond", submitResponse);
 router.get("/:id/results", getResults);
+router.get("/:id/participant-response", getParticipantResponse);
 
 export default router;
+

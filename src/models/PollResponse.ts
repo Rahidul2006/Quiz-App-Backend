@@ -2,6 +2,7 @@ import mongoose, { Document, Schema } from "mongoose";
 
 export interface IPollResponse extends Document {
   activityId: mongoose.Types.ObjectId;
+  eventId?: mongoose.Types.ObjectId;
   optionId?: mongoose.Types.ObjectId | string;
   participantId: string;
   participantName: string;
@@ -18,8 +19,14 @@ const PollResponseSchema = new Schema<IPollResponse>(
       required: true,
       index: true,
     },
+    eventId: {
+      type: Schema.Types.ObjectId,
+      ref: "Event",
+      index: true,
+    },
     optionId: {
       type: Schema.Types.Mixed,
+      index: true,
     },
     participantId: {
       type: String,
@@ -41,6 +48,9 @@ const PollResponseSchema = new Schema<IPollResponse>(
     timestamps: { createdAt: true, updatedAt: false },
   }
 );
+
+PollResponseSchema.index({ activityId: 1, participantId: 1 });
+PollResponseSchema.index({ eventId: 1, activityId: 1 });
 
 import { createModelProxy, memoryPollResponses } from "../config/inMemoryStore";
 

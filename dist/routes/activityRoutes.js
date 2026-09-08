@@ -10,4 +10,5 @@ router.post("/:id/launch", activityController_1.launchActivity);
 router.post("/:id/stop", activityController_1.stopActivity);
 router.post("/:id/respond", activityController_1.submitResponse);
 router.get("/:id/results", activityController_1.getResults);
+router.get("/:id/participant-response", activityController_1.getParticipantResponse);
 exports.default = router;

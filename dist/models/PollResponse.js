@@ -42,8 +42,14 @@ const PollResponseSchema = new mongoose_1.Schema({
         required: true,
         index: true,
     },
+    eventId: {
+        type: mongoose_1.Schema.Types.ObjectId,
+        ref: "Event",
+        index: true,
+    },
     optionId: {
         type: mongoose_1.Schema.Types.Mixed,
+        index: true,
     },
     participantId: {
         type: String,
@@ -63,6 +69,8 @@ const PollResponseSchema = new mongoose_1.Schema({
 }, {
     timestamps: { createdAt: true, updatedAt: false },
 });
+PollResponseSchema.index({ activityId: 1, participantId: 1 });
+PollResponseSchema.index({ eventId: 1, activityId: 1 });
 const inMemoryStore_1 = require("../config/inMemoryStore");
 const MongoosePollResponse = mongoose_1.default.model("PollResponse", PollResponseSchema);
 exports.PollResponse = (0, inMemoryStore_1.createModelProxy)(MongoosePollResponse, inMemoryStore_1.memoryPollResponses);

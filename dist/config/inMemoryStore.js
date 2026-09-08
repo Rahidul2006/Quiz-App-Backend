@@ -81,30 +81,49 @@ const wrapDoc = (doc, collection) => {
     return wrapped;
 };
 exports.wrapDoc = wrapDoc;
-// Match document against MongoDB-style filter
+// Match document against MongoDB-style filter with safe string/ObjectId normalization
+const normalizeVal = (val) => {
+    if (val === null || val === undefined)
+        return "";
+    if (typeof val === "object") {
+        if (val._id)
+            return val._id.toString();
+        if (val.id)
+            return val.id.toString();
+        if (typeof val.toString === "function")
+            return val.toString();
+    }
+    return String(val);
+};
 const matchFilter = (item, filter) => {
     if (!filter || Object.keys(filter).length === 0)
         return true;
     for (const [key, value] of Object.entries(filter)) {
-        if (key === "_id") {
-            const itemId = item._id?.toString() || item.id?.toString();
+        if (key === "_id" || key === "id") {
+            const itemId = item._id ? normalizeVal(item._id) : normalizeVal(item.id);
             if (value && typeof value === "object" && "$ne" in value) {
-                if (itemId === value.$ne?.toString())
+                if (itemId === normalizeVal(value.$ne))
                     return false;
             }
-            else if (itemId !== value?.toString()) {
+            else if (itemId !== normalizeVal(value)) {
                 return false;
             }
         }
         else if (value && typeof value === "object" && "$ne" in value) {
-            const itemVal = item[key]?.toString?.() ?? item[key];
-            const neVal = value.$ne?.toString?.() ?? value.$ne;
+            const itemVal = normalizeVal(item[key]);
+            const neVal = normalizeVal(value.$ne);
             if (itemVal === neVal)
                 return false;
         }
+        else if (value && typeof value === "object" && "$in" in value && Array.isArray(value.$in)) {
+            const itemVal = normalizeVal(item[key]);
+            const inList = value.$in.map((v) => normalizeVal(v));
+            if (!inList.includes(itemVal))
+                return false;
+        }
         else {
-            const itemVal = item[key]?.toString?.() ?? item[key];
-            const filterVal = value?.toString?.() ?? value;
+            const itemVal = normalizeVal(item[key]);
+            const filterVal = normalizeVal(value);
             if (itemVal !== filterVal)
                 return false;
         }
