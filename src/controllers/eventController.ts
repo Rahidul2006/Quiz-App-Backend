@@ -242,6 +242,98 @@ export const stopEvent = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
+export const pauseEvent = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const event = await Event.findById(id);
+    if (!event) {
+      res.status(404).json({ message: "Event not found" });
+      return;
+    }
+
+    const pausedAt = new Date();
+    event.status = "PAUSED";
+    await event.save();
+
+    // Also pause any currently live activity
+    const activeActivities = await Activity.find({
+      eventId: event._id,
+      status: { $in: ["active", "LIVE", "live"] },
+    });
+
+    for (const act of activeActivities) {
+      let remaining = act.remainingSeconds;
+      if (act.endsAt) {
+        remaining = Math.max(1, Math.ceil((new Date(act.endsAt).getTime() - pausedAt.getTime()) / 1000));
+      } else if (!remaining) {
+        remaining = act.duration || 30;
+      }
+      act.status = "PAUSED";
+      act.remainingSeconds = remaining;
+      act.pausedAt = pausedAt;
+      act.endsAt = null;
+      await act.save();
+
+      emitToEventRoom(event._id.toString(), "activity:paused", {
+        activityId: act._id.toString(),
+        status: "PAUSED",
+        remainingSeconds: remaining,
+        pausedAt,
+        serverTime: pausedAt,
+      });
+    }
+
+    const payload = {
+      eventId: event._id.toString(),
+      status: "PAUSED",
+      pausedAt,
+      serverTime: new Date(),
+    };
+
+    emitToEventRoom(event._id.toString(), "event:paused", payload);
+
+    res.json({
+      ...event.toObject(),
+      id: event._id,
+      serverTime: new Date(),
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const resumeEvent = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const event = await Event.findById(id);
+    if (!event) {
+      res.status(404).json({ message: "Event not found" });
+      return;
+    }
+
+    const resumedAt = new Date();
+    event.status = "LIVE";
+    await event.save();
+
+    const payload = {
+      eventId: event._id.toString(),
+      status: "LIVE",
+      resumedAt,
+      serverTime: new Date(),
+    };
+
+    emitToEventRoom(event._id.toString(), "event:resumed", payload);
+
+    res.json({
+      ...event.toObject(),
+      id: event._id,
+      serverTime: new Date(),
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const getEventStatus = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;

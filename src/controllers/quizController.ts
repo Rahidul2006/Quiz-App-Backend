@@ -20,6 +20,11 @@ export const answerQuizQuestion = async (req: Request, res: Response): Promise<v
       return;
     }
 
+    if (activity.status === "PAUSED" || activity.status === "paused") {
+      res.status(400).json({ message: "Quiz activity is currently paused by organizer" });
+      return;
+    }
+
     const question = (activity.questions || []).find(
       (q: any) => q._id?.toString() === questionId || q.id === questionId
     );

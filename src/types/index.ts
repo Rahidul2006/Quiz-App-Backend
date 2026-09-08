@@ -2,6 +2,7 @@ export type EventStatus =
   | 'WAITING'
   | 'LIVE'
   | 'ENDED'
+  | 'PAUSED'
   | 'waiting'
   | 'live'
   | 'ended'
@@ -21,11 +22,13 @@ export type ActivityStatus =
   | 'WAITING'
   | 'LIVE'
   | 'ENDED'
+  | 'PAUSED'
   | 'draft'
   | 'active'
   | 'ended'
   | 'waiting'
-  | 'live';
+  | 'live'
+  | 'paused';
 
 export type PollType =
   | 'single'
