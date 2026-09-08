@@ -21,6 +21,20 @@ export const getRounds = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
+export const getRoundById = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const round = await JudgingRound.findById(id);
+    if (!round) {
+      res.status(404).json({ message: "Round not found" });
+      return;
+    }
+    res.json({ ...round.toObject(), id: round._id });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message || "Failed to fetch round" });
+  }
+};
+
 export const createRound = async (req: Request, res: Response): Promise<void> => {
   try {
     const { name, description, evaluationMode, allowJudgeEditAfterSubmit } = req.body;
@@ -482,6 +496,16 @@ export const saveAssignments = async (req: Request, res: Response): Promise<void
     });
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to save assignments" });
+  }
+};
+
+export const clearAssignments = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { roundId } = req.params;
+    await JudgeAssignment.deleteMany({ roundId });
+    res.json({ message: "Assignments cleared successfully" });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message || "Failed to delete assignments" });
   }
 };
 

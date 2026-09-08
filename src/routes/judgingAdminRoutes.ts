@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAdmin } from "../middleware/authMiddleware";
 import {
   getRounds,
+  getRoundById,
   createRound,
   updateRound,
   toggleLockRound,
@@ -22,6 +23,7 @@ import {
   deleteCriterion,
   getAssignments,
   saveAssignments,
+  clearAssignments,
   getJudgingOverview,
   getJudgingResults,
   getTeamScoreDetail,
@@ -36,7 +38,9 @@ router.use(requireAdmin);
 // Rounds
 router.get("/rounds", getRounds);
 router.post("/rounds", createRound);
+router.get("/rounds/:id", getRoundById);
 router.patch("/rounds/:id", updateRound);
+router.put("/rounds/:id", updateRound);
 router.post("/rounds/:id/toggle-lock", toggleLockRound);
 router.delete("/rounds/:id", deleteRound);
 
@@ -44,6 +48,7 @@ router.delete("/rounds/:id", deleteRound);
 router.get("/judges", getJudges);
 router.post("/judges", createJudge);
 router.patch("/judges/:id", updateJudge);
+router.put("/judges/:id", updateJudge);
 router.post("/judges/:id/regenerate-password", regenerateJudgePassword);
 router.post("/judges/:id/toggle-status", toggleJudgeStatus);
 router.delete("/judges/:id", deleteJudge);
@@ -52,17 +57,20 @@ router.delete("/judges/:id", deleteJudge);
 router.get("/rounds/:roundId/teams", getTeams);
 router.post("/rounds/:roundId/teams", createTeam);
 router.patch("/teams/:id", updateTeam);
+router.put("/teams/:id", updateTeam);
 router.delete("/teams/:id", deleteTeam);
 
 // Criteria (scoped by round)
 router.get("/rounds/:roundId/criteria", getCriteria);
 router.post("/rounds/:roundId/criteria", createCriterion);
 router.patch("/criteria/:id", updateCriterion);
+router.put("/criteria/:id", updateCriterion);
 router.delete("/criteria/:id", deleteCriterion);
 
 // Assignments (scoped by round)
 router.get("/rounds/:roundId/assignments", getAssignments);
 router.post("/rounds/:roundId/assignments", saveAssignments);
+router.delete("/rounds/:roundId/assignments", clearAssignments);
 
 // Analytics & Results
 router.get("/rounds/:roundId/overview", getJudgingOverview);

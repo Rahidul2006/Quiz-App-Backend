@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getJudgeScoreDetail = exports.getTeamScoreDetail = exports.getJudgingResults = exports.getJudgingOverview = exports.saveAssignments = exports.getAssignments = exports.deleteCriterion = exports.updateCriterion = exports.createCriterion = exports.getCriteria = exports.deleteTeam = exports.updateTeam = exports.createTeam = exports.getTeams = exports.deleteJudge = exports.toggleJudgeStatus = exports.regenerateJudgePassword = exports.updateJudge = exports.createJudge = exports.getJudges = exports.deleteRound = exports.toggleLockRound = exports.updateRound = exports.createRound = exports.getRounds = void 0;
+exports.getJudgeScoreDetail = exports.getTeamScoreDetail = exports.getJudgingResults = exports.getJudgingOverview = exports.clearAssignments = exports.saveAssignments = exports.getAssignments = exports.deleteCriterion = exports.updateCriterion = exports.createCriterion = exports.getCriteria = exports.deleteTeam = exports.updateTeam = exports.createTeam = exports.getTeams = exports.deleteJudge = exports.toggleJudgeStatus = exports.regenerateJudgePassword = exports.updateJudge = exports.createJudge = exports.getJudges = exports.deleteRound = exports.toggleLockRound = exports.updateRound = exports.createRound = exports.getRoundById = exports.getRounds = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const crypto_1 = __importDefault(require("crypto"));
 const JudgingRound_1 = require("../models/JudgingRound");
@@ -25,6 +25,21 @@ const getRounds = async (req, res) => {
     }
 };
 exports.getRounds = getRounds;
+const getRoundById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const round = await JudgingRound_1.JudgingRound.findById(id);
+        if (!round) {
+            res.status(404).json({ message: "Round not found" });
+            return;
+        }
+        res.json({ ...round.toObject(), id: round._id });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message || "Failed to fetch round" });
+    }
+};
+exports.getRoundById = getRoundById;
 const createRound = async (req, res) => {
     try {
         const { name, description, evaluationMode, allowJudgeEditAfterSubmit } = req.body;
@@ -483,6 +498,17 @@ const saveAssignments = async (req, res) => {
     }
 };
 exports.saveAssignments = saveAssignments;
+const clearAssignments = async (req, res) => {
+    try {
+        const { roundId } = req.params;
+        await JudgeAssignment_1.JudgeAssignment.deleteMany({ roundId });
+        res.json({ message: "Assignments cleared successfully" });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message || "Failed to delete assignments" });
+    }
+};
+exports.clearAssignments = clearAssignments;
 // ==========================================
 // 6. LIVE OVERVIEW & PROGRESS
 // ==========================================

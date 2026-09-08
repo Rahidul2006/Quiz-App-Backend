@@ -18,6 +18,8 @@ router.get("/me", requireJudge, getJudgeMe);
 router.get("/assigned-teams", requireJudge, getAssignedTeams);
 router.get("/teams/:teamId/evaluate", requireJudge, getTeamForEvaluation);
 router.post("/teams/:teamId/draft", requireJudge, saveDraftEvaluation);
+router.put("/teams/:teamId/draft", requireJudge, saveDraftEvaluation);
+router.patch("/teams/:teamId/draft", requireJudge, saveDraftEvaluation);
 router.post("/teams/:teamId/submit", requireJudge, submitEvaluation);
 
 export default router;
