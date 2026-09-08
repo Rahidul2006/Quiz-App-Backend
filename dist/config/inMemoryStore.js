@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.seedInMemoryStore = exports.memoryUsers = exports.memoryQuizResponses = exports.memoryWordCloudResponses = exports.memoryPollResponses = exports.memoryParticipants = exports.memoryActivities = exports.memoryEvents = exports.MemoryCollection = exports.wrapDoc = exports.generateId = exports.createModelProxy = void 0;
+exports.seedInMemoryStore = exports.memoryEvaluations = exports.memoryJudgeAssignments = exports.memoryJudgingCriteria = exports.memoryJudgingTeams = exports.memoryJudges = exports.memoryJudgingRounds = exports.memoryUsers = exports.memoryQuizResponses = exports.memoryWordCloudResponses = exports.memoryPollResponses = exports.memoryParticipants = exports.memoryActivities = exports.memoryEvents = exports.MemoryCollection = exports.wrapDoc = exports.generateId = exports.createModelProxy = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const db_1 = require("./db");
 const createModelProxy = (mongooseModel, memoryCollection) => {
@@ -309,6 +309,13 @@ exports.memoryPollResponses = new MemoryCollection();
 exports.memoryWordCloudResponses = new MemoryCollection();
 exports.memoryQuizResponses = new MemoryCollection();
 exports.memoryUsers = new MemoryCollection();
+// Judging In-Memory Stores
+exports.memoryJudgingRounds = new MemoryCollection();
+exports.memoryJudges = new MemoryCollection();
+exports.memoryJudgingTeams = new MemoryCollection();
+exports.memoryJudgingCriteria = new MemoryCollection();
+exports.memoryJudgeAssignments = new MemoryCollection();
+exports.memoryEvaluations = new MemoryCollection();
 // Seed in-memory store with default admin user if not exists
 const seedInMemoryStore = async () => {
     if (exports.memoryUsers.data.length > 0)

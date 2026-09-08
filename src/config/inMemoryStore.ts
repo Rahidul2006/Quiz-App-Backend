@@ -324,6 +324,14 @@ export const memoryWordCloudResponses = new MemoryCollection<any>();
 export const memoryQuizResponses = new MemoryCollection<any>();
 export const memoryUsers = new MemoryCollection<any>();
 
+// Judging In-Memory Stores
+export const memoryJudgingRounds = new MemoryCollection<any>();
+export const memoryJudges = new MemoryCollection<any>();
+export const memoryJudgingTeams = new MemoryCollection<any>();
+export const memoryJudgingCriteria = new MemoryCollection<any>();
+export const memoryJudgeAssignments = new MemoryCollection<any>();
+export const memoryEvaluations = new MemoryCollection<any>();
+
 // Seed in-memory store with default admin user if not exists
 export const seedInMemoryStore = async (): Promise<void> => {
   if (memoryUsers.data.length > 0) return;

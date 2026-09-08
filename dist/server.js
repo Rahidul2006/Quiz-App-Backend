@@ -15,6 +15,8 @@ const authRoutes_1 = __importDefault(require("./routes/authRoutes"));
 const eventRoutes_1 = __importDefault(require("./routes/eventRoutes"));
 const activityRoutes_1 = __importDefault(require("./routes/activityRoutes"));
 const quizRoutes_1 = __importDefault(require("./routes/quizRoutes"));
+const judgingAdminRoutes_1 = __importDefault(require("./routes/judgingAdminRoutes"));
+const judgeRoutes_1 = __importDefault(require("./routes/judgeRoutes"));
 const Event_1 = require("./models/Event");
 const Activity_1 = require("./models/Activity");
 const Participant_1 = require("./models/Participant");
@@ -65,6 +67,8 @@ app.use("/api/auth", authRoutes_1.default);
 app.use("/api/events", eventRoutes_1.default);
 app.use("/api/activities", activityRoutes_1.default);
 app.use("/api/quizzes", quizRoutes_1.default);
+app.use("/api/judging", judgingAdminRoutes_1.default);
+app.use("/api/judge", judgeRoutes_1.default);
 // Error Middleware
 app.use(errorMiddleware_1.errorHandler);
 const activityController_1 = require("./controllers/activityController");

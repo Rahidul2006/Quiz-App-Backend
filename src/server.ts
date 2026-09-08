@@ -11,6 +11,8 @@ import authRoutes from "./routes/authRoutes";
 import eventRoutes from "./routes/eventRoutes";
 import activityRoutes from "./routes/activityRoutes";
 import quizRoutes from "./routes/quizRoutes";
+import judgingAdminRoutes from "./routes/judgingAdminRoutes";
+import judgeRoutes from "./routes/judgeRoutes";
 import { Event } from "./models/Event";
 import { Activity } from "./models/Activity";
 import { WordCloudResponse } from "./models/WordCloudResponse";
@@ -75,6 +77,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/activities", activityRoutes);
 app.use("/api/quizzes", quizRoutes);
+app.use("/api/judging", judgingAdminRoutes);
+app.use("/api/judge", judgeRoutes);
 
 // Error Middleware
 app.use(errorHandler);
