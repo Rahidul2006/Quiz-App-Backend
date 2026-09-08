@@ -4,6 +4,9 @@ exports.checkAndEndExpiredEvents = exports.getParticipants = exports.joinEvent =
 const Event_1 = require("../models/Event");
 const Participant_1 = require("../models/Participant");
 const Activity_1 = require("../models/Activity");
+const PollResponse_1 = require("../models/PollResponse");
+const WordCloudResponse_1 = require("../models/WordCloudResponse");
+const QuizResponse_1 = require("../models/QuizResponse");
 const socketHandler_1 = require("../sockets/socketHandler");
 const generateJoinCode = async () => {
     let code = "";
@@ -106,6 +109,7 @@ const createEvent = async (req, res) => {
                 show_live_results: true,
                 ...settings,
             },
+            createdBy: req.user?.id || undefined,
         });
         res.status(201).json({
             ...event.toObject(),
@@ -247,10 +251,19 @@ exports.getEventStatus = getEventStatus;
 const deleteEvent = async (req, res) => {
     try {
         const { id } = req.params;
+        const activities = await Activity_1.Activity.find({ eventId: id });
+        const activityIds = activities.map((a) => a._id);
+        // Clean up all nested response records
+        if (activityIds.length > 0) {
+            await PollResponse_1.PollResponse.deleteMany({ activityId: { $in: activityIds } });
+            await WordCloudResponse_1.WordCloudResponse.deleteMany({ activityId: { $in: activityIds } });
+            await QuizResponse_1.QuizResponse.deleteMany({ activityId: { $in: activityIds } });
+        }
         await Event_1.Event.findByIdAndDelete(id);
         await Activity_1.Activity.deleteMany({ eventId: id });
         await Participant_1.Participant.deleteMany({ eventId: id });
-        res.json({ message: "Event and associated records deleted successfully" });
+        (0, socketHandler_1.emitToEventRoom)(id, "event:deleted", { eventId: id });
+        res.json({ message: "Event and all associated records deleted successfully" });
     }
     catch (error) {
         res.status(500).json({ message: error.message });

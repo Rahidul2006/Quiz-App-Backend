@@ -2,9 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const quizController_1 = require("../controllers/quizController");
+const authMiddleware_1 = require("../middleware/authMiddleware");
 const router = (0, express_1.Router)();
 router.post("/:id/answer", quizController_1.answerQuizQuestion);
-router.post("/:id/advance", quizController_1.advanceQuizQuestion);
-router.post("/:id/finish", quizController_1.finishQuiz);
+router.post("/:id/advance", authMiddleware_1.requireAdmin, quizController_1.advanceQuizQuestion);
+router.post("/:id/finish", authMiddleware_1.requireAdmin, quizController_1.finishQuiz);
 router.get("/:id/leaderboard", quizController_1.getLeaderboard);
 exports.default = router;

@@ -1,8 +1,13 @@
 import { Request, Response } from "express";
+import { AuthRequest } from "../middleware/authMiddleware";
 import { Event } from "../models/Event";
 import { Participant } from "../models/Participant";
 import { Activity } from "../models/Activity";
+import { PollResponse } from "../models/PollResponse";
+import { WordCloudResponse } from "../models/WordCloudResponse";
+import { QuizResponse } from "../models/QuizResponse";
 import { emitToEventRoom } from "../sockets/socketHandler";
+
 
 const generateJoinCode = async (): Promise<string> => {
   let code = "";
@@ -14,6 +19,7 @@ const generateJoinCode = async (): Promise<string> => {
   }
   return code;
 };
+
 
 export const getEvents = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -85,7 +91,7 @@ export const getEventByCode = async (req: Request, res: Response): Promise<void>
   }
 };
 
-export const createEvent = async (req: Request, res: Response): Promise<void> => {
+export const createEvent = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { title, description, settings, theme, duration } = req.body;
     if (!title || !title.trim()) {
@@ -112,7 +118,9 @@ export const createEvent = async (req: Request, res: Response): Promise<void> =>
         show_live_results: true,
         ...settings,
       },
+      createdBy: req.user?.id || undefined,
     });
+
 
     res.status(201).json({
       ...event.toObject(),
@@ -264,14 +272,28 @@ export const getEventStatus = async (req: Request, res: Response): Promise<void>
 export const deleteEvent = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
+    const activities = await Activity.find({ eventId: id });
+    const activityIds = activities.map((a) => a._id);
+
+    // Clean up all nested response records
+    if (activityIds.length > 0) {
+      await PollResponse.deleteMany({ activityId: { $in: activityIds } });
+      await WordCloudResponse.deleteMany({ activityId: { $in: activityIds } });
+      await QuizResponse.deleteMany({ activityId: { $in: activityIds } });
+    }
+
     await Event.findByIdAndDelete(id);
     await Activity.deleteMany({ eventId: id });
     await Participant.deleteMany({ eventId: id });
-    res.json({ message: "Event and associated records deleted successfully" });
+
+    emitToEventRoom(id, "event:deleted", { eventId: id });
+
+    res.json({ message: "Event and all associated records deleted successfully" });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
 };
+
 
 export const joinEvent = async (req: Request, res: Response): Promise<void> => {
   try {

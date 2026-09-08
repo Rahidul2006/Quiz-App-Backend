@@ -55,33 +55,25 @@ const login = async (req, res) => {
             return;
         }
         const inputEmail = email.trim().toLowerCase();
-        const envAdminEmail = (process.env.ADMIN_EMAIL || "admin@demo.org").trim().toLowerCase();
-        const envAdminPassword = process.env.ADMIN_PASSWORD || "demo123";
+        const envAdminEmail = process.env.ADMIN_EMAIL ? process.env.ADMIN_EMAIL.trim().toLowerCase() : null;
+        const envAdminPassword = process.env.ADMIN_PASSWORD;
         const envAdminName = process.env.ADMIN_NAME || "Administrator";
-        // 1. Check if matching env-configured admin credentials OR demo credentials
-        const isEnvAdmin = inputEmail === envAdminEmail && password === envAdminPassword;
-        const isFallbackDemo = inputEmail === "admin@demo.org" && password === "demo123";
-        if (isEnvAdmin || isFallbackDemo) {
-            const targetEmail = isEnvAdmin ? envAdminEmail : "admin@demo.org";
-            const targetName = isEnvAdmin ? envAdminName : "Demo Event Host";
-            const targetPassword = isEnvAdmin ? envAdminPassword : "demo123";
-            let adminUser = await User_1.User.findOne({ email: targetEmail });
+        // 1. Check if matching env-configured admin credentials
+        if (envAdminEmail && envAdminPassword && inputEmail === envAdminEmail && password === envAdminPassword) {
+            let adminUser = await User_1.User.findOne({ email: envAdminEmail });
             if (!adminUser) {
                 const salt = await bcryptjs_1.default.genSalt(10);
-                const passwordHash = await bcryptjs_1.default.hash(targetPassword, salt);
+                const passwordHash = await bcryptjs_1.default.hash(envAdminPassword, salt);
                 adminUser = await User_1.User.create({
-                    email: targetEmail,
+                    email: envAdminEmail,
                     passwordHash,
-                    fullName: targetName,
+                    fullName: envAdminName,
                     role: "admin",
                 });
             }
-            else {
-                // Ensure role is admin
-                if (adminUser.role !== "admin") {
-                    adminUser.role = "admin";
-                    await adminUser.save();
-                }
+            else if (adminUser.role !== "admin") {
+                adminUser.role = "admin";
+                await adminUser.save();
             }
             const token = generateToken(adminUser._id.toString(), adminUser.email, adminUser.role);
             res.json({
@@ -129,10 +121,9 @@ const getMe = async (req, res) => {
         }
         const user = await User_1.User.findById(req.user.id).select("-passwordHash");
         if (!user) {
-            // Check if user is the env admin or demo admin by email in verified JWT
-            const envAdminEmail = (process.env.ADMIN_EMAIL || "admin@demo.org").trim().toLowerCase();
+            const envAdminEmail = process.env.ADMIN_EMAIL ? process.env.ADMIN_EMAIL.trim().toLowerCase() : null;
             const userEmail = req.user.email?.toLowerCase();
-            if (userEmail === envAdminEmail || userEmail === "admin@demo.org") {
+            if (envAdminEmail && userEmail === envAdminEmail) {
                 res.json({
                     user: {
                         id: req.user.id,

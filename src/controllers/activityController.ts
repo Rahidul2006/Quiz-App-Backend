@@ -366,11 +366,61 @@ export const getResults = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
+    if (activity.type === "quiz") {
+      const responses = await QuizResponse.find({ activityId: activity._id });
+      const totalQuestions = activity.questions?.length || 0;
+
+      const map = new Map<string, { name: string; score: number; correct: number; totalTimeMs: number }>();
+      responses.forEach((r) => {
+        const current = map.get(r.participantId) || {
+          name: r.participantName,
+          score: 0,
+          correct: 0,
+          totalTimeMs: 0,
+        };
+        current.score += r.scoreAwarded;
+        if (r.isCorrect) current.correct += 1;
+        current.totalTimeMs += r.timeTakenMs;
+        map.set(r.participantId, current);
+      });
+
+      const leaderboard: any[] = [];
+      map.forEach((data, pId) => {
+        leaderboard.push({
+          participant_id: pId,
+          participant_name: data.name,
+          total_score: data.score,
+          correct_answers: data.correct,
+          total_questions: totalQuestions,
+          total_time_ms: data.totalTimeMs,
+        });
+      });
+
+      leaderboard.sort((a, b) => {
+        if (b.total_score !== a.total_score) return b.total_score - a.total_score;
+        return a.total_time_ms - b.total_time_ms;
+      });
+
+      const rankedLeaderboard = leaderboard.map((item, idx) => ({
+        ...item,
+        rank: idx + 1,
+      }));
+
+      res.json({
+        type: "quiz",
+        leaderboard: rankedLeaderboard,
+        totalResponses: responses.length,
+        totalQuestions,
+      });
+      return;
+    }
+
     res.json({ message: "Results retrieved" });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
 };
+
 
 export const getParticipantResponse = async (req: Request, res: Response): Promise<void> => {
   try {

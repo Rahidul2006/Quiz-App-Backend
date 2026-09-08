@@ -79,136 +79,22 @@ app.use("/api/quizzes", quizRoutes);
 // Error Middleware
 app.use(errorHandler);
 
-// Seed Initial Demo Event in MongoDB if none exist
-async function seedInitialData() {
+import { checkAndEndExpiredEvents } from "./controllers/eventController";
+
+// Clean up any legacy demo data from database if present
+async function cleanupDemoData() {
   try {
-    const existing = await Event.findOne({ joinCode: "3157530" });
-    if (!existing) {
-      console.log("[MongoDB] Seeding initial demo event: React Kolkata Offline Meetup 2026...");
-      const event = await Event.create({
-        title: "React Kolkata Offline Meetup 2026",
-        description: "Annual gathering of React, Next.js and frontend developers in Kolkata.",
-        joinCode: "3157530",
-        status: "active",
-        theme: "dark",
-        settings: {
-          require_name: true,
-          allow_anonymous: false,
-          show_live_results: true,
-        },
-      });
-
-      // Seed Word Cloud Activity
-      const wordCloud = await Activity.create({
-        eventId: event._id,
-        type: "word_cloud",
-        title: "Where Are You Joining From?",
-        status: "active",
-        orderIndex: 0,
-        settings: { show_live_results: true },
-      });
-
-      event.activeActivityId = wordCloud._id as any;
-      await event.save();
-
-      // Seed Poll Activity
-      await Activity.create({
-        eventId: event._id,
-        type: "poll",
-        title: "Where are you joining from?",
-        status: "draft",
-        orderIndex: 1,
-        settings: { poll_type: "multiple", allow_multiple: true, show_live_results: true },
-        options: [
-          { text: "Techno India University", order_index: 0 },
-          { text: "Brainware University", order_index: 1 },
-          { text: "JIS College of Engineering", order_index: 2 },
-          { text: "Other Institutes / Working Pros", order_index: 3 },
-        ],
-      });
-
-      // Seed Quiz Activity
-      await Activity.create({
-        eventId: event._id,
-        type: "quiz",
-        title: "React Kolkata Speed Trivia ⚡",
-        status: "draft",
-        orderIndex: 2,
-        settings: { quiz_state: "answering" },
-        questions: [
-          {
-            question_text: "Which organization primarily created and maintains React?",
-            time_limit_sec: 15,
-            points: 1000,
-            explanation: "React was created by Jordan Walke, a software engineer at Meta (Facebook).",
-            order_index: 0,
-            options: [
-              { option_text: "Google", is_correct: false, order_index: 0 },
-              { option_text: "Meta", is_correct: true, order_index: 1 },
-              { option_text: "Vercel", is_correct: false, order_index: 2 },
-              { option_text: "Microsoft", is_correct: false, order_index: 3 },
-            ],
-          },
-          {
-            question_text: "Which hook is used in React to manage component side effects?",
-            time_limit_sec: 15,
-            points: 1000,
-            explanation: "useEffect lets you synchronize a component with an external system.",
-            order_index: 1,
-            options: [
-              { option_text: "useState", is_correct: false, order_index: 0 },
-              { option_text: "useEffect", is_correct: true, order_index: 1 },
-              { option_text: "useMemo", is_correct: false, order_index: 2 },
-              { option_text: "useCallback", is_correct: false, order_index: 3 },
-            ],
-          },
-        ],
-      });
-
-      // Seed participants & words
-      const sampleParticipants = [
-        "Prodipta Roy",
-        "Rashmi Tiwari",
-        "Suman Singha",
-        "Soumyadeep Dey",
-        "Subha Sasmal",
-      ];
-      for (const name of sampleParticipants) {
-        await Participant.create({
-          eventId: event._id,
-          name,
-          sessionToken: "sess_" + Math.random().toString(36).substring(2, 10),
-        });
-      }
-
-      const words = [
-        "React Kolkata",
-        "React Kolkata",
-        "Techno India",
-        "Techno India",
-        "Kolkata",
-        "Brainware University",
-        "JISCE",
-        "Howrah",
-        "Siliguri",
-      ];
-      for (const w of words) {
-        await WordCloudResponse.create({
-          activityId: wordCloud._id,
-          participantId: "seed_part",
-          word: w,
-          normalizedWord: w.toLowerCase().replace(/[^\w\s]/gi, ""),
-        });
-      }
-
-      console.log("[MongoDB] Initial demo event seeded successfully!");
+    const demoEvent = await Event.findOne({ joinCode: "3157530" });
+    if (demoEvent) {
+      await Activity.deleteMany({ eventId: demoEvent._id });
+      await Participant.deleteMany({ eventId: demoEvent._id });
+      await Event.deleteOne({ _id: demoEvent._id });
+      console.log("[Database] Legacy demo event cleaned up successfully.");
     }
-  } catch (err) {
-    console.warn("[MongoDB] Seed check:", err);
+  } catch (err: any) {
+    console.warn("[Database] Cleanup notice:", err.message);
   }
 }
-
-import { checkAndEndExpiredEvents } from "./controllers/eventController";
 
 // Start Server
 const startServer = async () => {
@@ -221,9 +107,9 @@ const startServer = async () => {
   setInterval(checkAndEndExpiredEvents, 5000);
 
   connectDB()
-    .then((connected) => {
+    .then(async (connected) => {
       if (connected) {
-        seedInitialData();
+        await cleanupDemoData();
       }
     })
     .catch((err) => {
@@ -232,6 +118,7 @@ const startServer = async () => {
 };
 
 startServer();
+
 
 // Graceful Shutdown
 process.on("SIGINT", async () => {

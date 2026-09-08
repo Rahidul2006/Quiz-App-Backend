@@ -2,12 +2,13 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const activityController_1 = require("../controllers/activityController");
+const authMiddleware_1 = require("../middleware/authMiddleware");
 const router = (0, express_1.Router)();
 router.get("/:id", activityController_1.getActivityById);
-router.patch("/:id", activityController_1.updateActivity);
-router.delete("/:id", activityController_1.deleteActivity);
-router.post("/:id/launch", activityController_1.launchActivity);
-router.post("/:id/stop", activityController_1.stopActivity);
+router.patch("/:id", authMiddleware_1.requireAdmin, activityController_1.updateActivity);
+router.delete("/:id", authMiddleware_1.requireAdmin, activityController_1.deleteActivity);
+router.post("/:id/launch", authMiddleware_1.requireAdmin, activityController_1.launchActivity);
+router.post("/:id/stop", authMiddleware_1.requireAdmin, activityController_1.stopActivity);
 router.post("/:id/respond", activityController_1.submitResponse);
 router.get("/:id/results", activityController_1.getResults);
 router.get("/:id/participant-response", activityController_1.getParticipantResponse);

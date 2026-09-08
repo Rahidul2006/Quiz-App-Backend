@@ -13,25 +13,27 @@ import {
   getEventStatus,
 } from "../controllers/eventController";
 import { getActivities, createActivity } from "../controllers/activityController";
+import { requireAdmin } from "../middleware/authMiddleware";
 
 const router = Router();
 
-router.get("/", getEvents);
-router.post("/", createEvent);
+router.get("/", requireAdmin, getEvents);
+router.post("/", requireAdmin, createEvent);
 router.get("/code/:code", getEventByCode);
 router.get("/:id", getEventById);
 router.get("/:id/status", getEventStatus);
-router.post("/:id/start", startEvent);
-router.post("/:id/stop", stopEvent);
-router.patch("/:id", updateEvent);
-router.delete("/:id", deleteEvent);
+router.post("/:id/start", requireAdmin, startEvent);
+router.post("/:id/stop", requireAdmin, stopEvent);
+router.patch("/:id", requireAdmin, updateEvent);
+router.delete("/:id", requireAdmin, deleteEvent);
 
-// Participant routes
+// Participant routes (public)
 router.post("/:id/join", joinEvent);
 router.get("/:id/participants", getParticipants);
 
 // Activity nested routes
 router.get("/:eventId/activities", getActivities);
-router.post("/:eventId/activities", createActivity);
+router.post("/:eventId/activities", requireAdmin, createActivity);
 
 export default router;
+

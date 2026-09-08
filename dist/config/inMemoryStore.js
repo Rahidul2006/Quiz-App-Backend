@@ -309,15 +309,11 @@ exports.memoryPollResponses = new MemoryCollection();
 exports.memoryWordCloudResponses = new MemoryCollection();
 exports.memoryQuizResponses = new MemoryCollection();
 exports.memoryUsers = new MemoryCollection();
-// Seed in-memory store with demo meetup event
+// Seed in-memory store with default admin user if not exists
 const seedInMemoryStore = async () => {
-    if (exports.memoryEvents.data.length > 0)
+    if (exports.memoryUsers.data.length > 0)
         return;
-    const eventId = "65e000000000000000000001";
-    const wordCloudId = "65e000000000000000000002";
-    const pollId = "65e000000000000000000003";
-    const quizId = "65e000000000000000000004";
-    // 1. Admin User
+    // Admin User
     const adminEmail = (process.env.ADMIN_EMAIL || "admin@demo.org").trim().toLowerCase();
     const adminPassword = process.env.ADMIN_PASSWORD || "demo123";
     const adminName = process.env.ADMIN_NAME || "Administrator";
@@ -330,131 +326,7 @@ const seedInMemoryStore = async () => {
         fullName: adminName,
         role: "admin",
     });
-    // 2. Demo Event
-    await exports.memoryEvents.create({
-        _id: eventId,
-        title: "React Kolkata Offline Meetup 2026",
-        description: "Annual gathering of React, Next.js and frontend developers in Kolkata.",
-        joinCode: "3157530",
-        status: "WAITING",
-        duration: 30,
-        startedAt: null,
-        endsAt: null,
-        stoppedAt: null,
-        theme: "dark",
-        settings: {
-            require_name: true,
-            allow_anonymous: false,
-            show_live_results: true,
-        },
-        activeActivityId: null,
-    });
-    // 3. Word Cloud Activity
-    await exports.memoryActivities.create({
-        _id: wordCloudId,
-        eventId,
-        type: "word_cloud",
-        title: "Where Are You Joining From?",
-        status: "active",
-        orderIndex: 0,
-        settings: { show_live_results: true },
-    });
-    // 4. Poll Activity
-    await exports.memoryActivities.create({
-        _id: pollId,
-        eventId,
-        type: "poll",
-        title: "Which institute or company are you joining from?",
-        status: "draft",
-        orderIndex: 1,
-        settings: { poll_type: "multiple", allow_multiple: true, show_live_results: true },
-        options: [
-            { _id: "65e000000000000000000011", text: "Techno India University", order_index: 0 },
-            { _id: "65e000000000000000000012", text: "Brainware University", order_index: 1 },
-            { _id: "65e000000000000000000013", text: "JIS College of Engineering", order_index: 2 },
-            { _id: "65e000000000000000000014", text: "Other Institutes / Working Pros", order_index: 3 },
-        ],
-    });
-    // 5. Quiz Activity
-    await exports.memoryActivities.create({
-        _id: quizId,
-        eventId,
-        type: "quiz",
-        title: "React Kolkata Speed Trivia ⚡",
-        status: "draft",
-        orderIndex: 2,
-        settings: { quiz_state: "answering" },
-        activeQuestionIndex: 0,
-        questions: [
-            {
-                _id: "65e000000000000000000021",
-                question_text: "Which organization primarily created and maintains React?",
-                time_limit_sec: 15,
-                points: 1000,
-                explanation: "React was created by Jordan Walke, a software engineer at Meta (Facebook).",
-                order_index: 0,
-                options: [
-                    { _id: "65e000000000000000000031", option_text: "Google", is_correct: false, order_index: 0 },
-                    { _id: "65e000000000000000000032", option_text: "Meta", is_correct: true, order_index: 1 },
-                    { _id: "65e000000000000000000033", option_text: "Vercel", is_correct: false, order_index: 2 },
-                    { _id: "65e000000000000000000034", option_text: "Microsoft", is_correct: false, order_index: 3 },
-                ],
-            },
-            {
-                _id: "65e000000000000000000022",
-                question_text: "Which hook is used in React to manage component side effects?",
-                time_limit_sec: 15,
-                points: 1000,
-                explanation: "useEffect lets you synchronize a component with an external system.",
-                order_index: 1,
-                options: [
-                    { _id: "65e000000000000000000035", option_text: "useState", is_correct: false, order_index: 0 },
-                    { _id: "65e000000000000000000036", option_text: "useEffect", is_correct: true, order_index: 1 },
-                    { _id: "65e000000000000000000037", option_text: "useMemo", is_correct: false, order_index: 2 },
-                    { _id: "65e000000000000000000038", option_text: "useCallback", is_correct: false, order_index: 3 },
-                ],
-            },
-        ],
-    });
-    // 6. Sample Participants
-    const sampleParticipants = [
-        { name: "Prodipta Roy", id: "65e000000000000000000041" },
-        { name: "Rashmi Tiwari", id: "65e000000000000000000042" },
-        { name: "Suman Singha", id: "65e000000000000000000043" },
-        { name: "Soumyadeep Dey", id: "65e000000000000000000044" },
-        { name: "Subha Sasmal", id: "65e000000000000000000045" },
-    ];
-    for (const p of sampleParticipants) {
-        await exports.memoryParticipants.create({
-            _id: p.id,
-            eventId,
-            name: p.name,
-            sessionToken: "sess_" + p.name.toLowerCase().replace(/\s/g, "_"),
-            joinedAt: new Date(),
-        });
-    }
-    // 7. Seed Word Cloud words
-    const words = [
-        "React Kolkata",
-        "React Kolkata",
-        "Techno India",
-        "Techno India",
-        "Kolkata",
-        "Brainware University",
-        "JISCE",
-        "Howrah",
-        "Siliguri",
-    ];
-    for (const w of words) {
-        await exports.memoryWordCloudResponses.create({
-            activityId: wordCloudId,
-            participantId: "seed_part",
-            word: w,
-            normalizedWord: w.toLowerCase().replace(/[^\w\s]/gi, ""),
-        });
-    }
-    console.log("⚡ [In-Memory DB] Initial demo event (#3157530) seeded successfully!");
 };
 exports.seedInMemoryStore = seedInMemoryStore;
-// Auto-seed in-memory store immediately
+// Auto-seed in-memory store admin user immediately
 (0, exports.seedInMemoryStore)();

@@ -9,17 +9,19 @@ import {
   getResults,
   getParticipantResponse,
 } from "../controllers/activityController";
+import { requireAdmin } from "../middleware/authMiddleware";
 
 const router = Router();
 
 router.get("/:id", getActivityById);
-router.patch("/:id", updateActivity);
-router.delete("/:id", deleteActivity);
-router.post("/:id/launch", launchActivity);
-router.post("/:id/stop", stopActivity);
+router.patch("/:id", requireAdmin, updateActivity);
+router.delete("/:id", requireAdmin, deleteActivity);
+router.post("/:id/launch", requireAdmin, launchActivity);
+router.post("/:id/stop", requireAdmin, stopActivity);
 router.post("/:id/respond", submitResponse);
 router.get("/:id/results", getResults);
 router.get("/:id/participant-response", getParticipantResponse);
 
 export default router;
+
 
