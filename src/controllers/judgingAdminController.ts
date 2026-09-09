@@ -7,6 +7,7 @@ import { JudgingTeam } from "../models/JudgingTeam";
 import { JudgingCriterion } from "../models/JudgingCriterion";
 import { JudgeAssignment } from "../models/JudgeAssignment";
 import { Evaluation } from "../models/Evaluation";
+import { fetchCodecraftTeams, syncCodecraftTeamsToRound } from "../services/codecraftService";
 
 // ==========================================
 // 1. ROUND MANAGEMENT
@@ -299,10 +300,51 @@ export const deleteJudge = async (req: Request, res: Response): Promise<void> =>
 export const getTeams = async (req: Request, res: Response): Promise<void> => {
   try {
     const { roundId } = req.params;
+
+    // Every time admin requests/refreshes teams, fetch and sync the latest data from CodeCraft DB (Read-Only)
+    try {
+      await syncCodecraftTeamsToRound(roundId);
+    } catch (syncError: any) {
+      console.warn("[getTeams] Auto-sync with Codecraft URI warning:", syncError.message);
+    }
+
     const teams = await JudgingTeam.find({ roundId }).sort({ orderIndex: 1, teamCode: 1 });
     res.json(teams.map((t) => ({ ...t.toObject(), id: t._id })));
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to fetch teams" });
+  }
+};
+
+/**
+ * Live preview of teams directly from the external CodeCraft MongoDB URI (Read-Only).
+ */
+export const getCodecraftLiveTeams = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const teams = await fetchCodecraftTeams();
+    res.json({
+      success: true,
+      count: teams.length,
+      teams,
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message || "Failed to fetch live teams from CodeCraft DB" });
+  }
+};
+
+/**
+ * Manually trigger synchronization of CodeCraft teams into the current judging round.
+ */
+export const syncCodecraftTeams = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { roundId } = req.params;
+    const result = await syncCodecraftTeamsToRound(roundId);
+    res.json({
+      message: `Successfully fetched and synced ${result.syncedCount} teams from CodeCraft DB (${result.createdCount} new, ${result.updatedCount} updated).`,
+      ...result,
+      teams: result.teams.map((t) => ({ ...t.toObject(), id: t._id })),
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message || "Failed to sync CodeCraft teams" });
   }
 };
 

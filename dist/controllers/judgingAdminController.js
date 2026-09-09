@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getJudgeScoreDetail = exports.getTeamScoreDetail = exports.getJudgingResults = exports.getJudgingOverview = exports.clearAssignments = exports.saveAssignments = exports.getAssignments = exports.deleteCriterion = exports.updateCriterion = exports.createCriterion = exports.getCriteria = exports.deleteTeam = exports.updateTeam = exports.createTeam = exports.getTeams = exports.deleteJudge = exports.toggleJudgeStatus = exports.regenerateJudgePassword = exports.updateJudge = exports.createJudge = exports.getJudges = exports.deleteRound = exports.toggleLockRound = exports.updateRound = exports.createRound = exports.getRoundById = exports.getRounds = void 0;
+exports.getJudgeScoreDetail = exports.getTeamScoreDetail = exports.getJudgingResults = exports.getJudgingOverview = exports.clearAssignments = exports.saveAssignments = exports.getAssignments = exports.deleteCriterion = exports.updateCriterion = exports.createCriterion = exports.getCriteria = exports.deleteTeam = exports.updateTeam = exports.createTeam = exports.syncCodecraftTeams = exports.getCodecraftLiveTeams = exports.getTeams = exports.deleteJudge = exports.toggleJudgeStatus = exports.regenerateJudgePassword = exports.updateJudge = exports.createJudge = exports.getJudges = exports.deleteRound = exports.toggleLockRound = exports.updateRound = exports.createRound = exports.getRoundById = exports.getRounds = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const crypto_1 = __importDefault(require("crypto"));
 const JudgingRound_1 = require("../models/JudgingRound");
@@ -12,6 +12,7 @@ const JudgingTeam_1 = require("../models/JudgingTeam");
 const JudgingCriterion_1 = require("../models/JudgingCriterion");
 const JudgeAssignment_1 = require("../models/JudgeAssignment");
 const Evaluation_1 = require("../models/Evaluation");
+const codecraftService_1 = require("../services/codecraftService");
 // ==========================================
 // 1. ROUND MANAGEMENT
 // ==========================================
@@ -300,6 +301,13 @@ exports.deleteJudge = deleteJudge;
 const getTeams = async (req, res) => {
     try {
         const { roundId } = req.params;
+        // Every time admin requests/refreshes teams, fetch and sync the latest data from CodeCraft DB (Read-Only)
+        try {
+            await (0, codecraftService_1.syncCodecraftTeamsToRound)(roundId);
+        }
+        catch (syncError) {
+            console.warn("[getTeams] Auto-sync with Codecraft URI warning:", syncError.message);
+        }
         const teams = await JudgingTeam_1.JudgingTeam.find({ roundId }).sort({ orderIndex: 1, teamCode: 1 });
         res.json(teams.map((t) => ({ ...t.toObject(), id: t._id })));
     }
@@ -308,6 +316,41 @@ const getTeams = async (req, res) => {
     }
 };
 exports.getTeams = getTeams;
+/**
+ * Live preview of teams directly from the external CodeCraft MongoDB URI (Read-Only).
+ */
+const getCodecraftLiveTeams = async (req, res) => {
+    try {
+        const teams = await (0, codecraftService_1.fetchCodecraftTeams)();
+        res.json({
+            success: true,
+            count: teams.length,
+            teams,
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message || "Failed to fetch live teams from CodeCraft DB" });
+    }
+};
+exports.getCodecraftLiveTeams = getCodecraftLiveTeams;
+/**
+ * Manually trigger synchronization of CodeCraft teams into the current judging round.
+ */
+const syncCodecraftTeams = async (req, res) => {
+    try {
+        const { roundId } = req.params;
+        const result = await (0, codecraftService_1.syncCodecraftTeamsToRound)(roundId);
+        res.json({
+            message: `Successfully fetched and synced ${result.syncedCount} teams from CodeCraft DB (${result.createdCount} new, ${result.updatedCount} updated).`,
+            ...result,
+            teams: result.teams.map((t) => ({ ...t.toObject(), id: t._id })),
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message || "Failed to sync CodeCraft teams" });
+    }
+};
+exports.syncCodecraftTeams = syncCodecraftTeams;
 const createTeam = async (req, res) => {
     try {
         const { roundId } = req.params;

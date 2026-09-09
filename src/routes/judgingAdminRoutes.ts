@@ -28,6 +28,8 @@ import {
   getJudgingResults,
   getTeamScoreDetail,
   getJudgeScoreDetail,
+  getCodecraftLiveTeams,
+  syncCodecraftTeams,
 } from "../controllers/judgingAdminController";
 
 const router = Router();
@@ -54,6 +56,8 @@ router.post("/judges/:id/toggle-status", toggleJudgeStatus);
 router.delete("/judges/:id", deleteJudge);
 
 // Teams (scoped by round)
+router.get("/codecraft-teams", getCodecraftLiveTeams);
+router.post("/rounds/:roundId/sync-codecraft-teams", syncCodecraftTeams);
 router.get("/rounds/:roundId/teams", getTeams);
 router.post("/rounds/:roundId/teams", createTeam);
 router.patch("/teams/:id", updateTeam);

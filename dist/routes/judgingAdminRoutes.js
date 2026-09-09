@@ -23,6 +23,8 @@ router.post("/judges/:id/regenerate-password", judgingAdminController_1.regenera
 router.post("/judges/:id/toggle-status", judgingAdminController_1.toggleJudgeStatus);
 router.delete("/judges/:id", judgingAdminController_1.deleteJudge);
 // Teams (scoped by round)
+router.get("/codecraft-teams", judgingAdminController_1.getCodecraftLiveTeams);
+router.post("/rounds/:roundId/sync-codecraft-teams", judgingAdminController_1.syncCodecraftTeams);
 router.get("/rounds/:roundId/teams", judgingAdminController_1.getTeams);
 router.post("/rounds/:roundId/teams", judgingAdminController_1.createTeam);
 router.patch("/teams/:id", judgingAdminController_1.updateTeam);
