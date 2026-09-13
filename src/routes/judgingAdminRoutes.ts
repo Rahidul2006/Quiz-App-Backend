@@ -7,6 +7,7 @@ import {
   updateRound,
   toggleLockRound,
   deleteRound,
+  setActiveRound,
   getJudges,
   createJudge,
   updateJudge,
@@ -28,6 +29,9 @@ import {
   getJudgingResults,
   getTeamScoreDetail,
   getJudgeScoreDetail,
+  connectExternalDb,
+  previewExternalDbTeams,
+  importSingleTeam,
 } from "../controllers/judgingAdminController";
 
 const router = Router();
@@ -42,9 +46,10 @@ router.get("/rounds/:id", getRoundById);
 router.patch("/rounds/:id", updateRound);
 router.put("/rounds/:id", updateRound);
 router.post("/rounds/:id/toggle-lock", toggleLockRound);
+router.post("/rounds/:id/set-active", setActiveRound);
 router.delete("/rounds/:id", deleteRound);
 
-// Judges
+// Judges (global — not per-round)
 router.get("/judges", getJudges);
 router.post("/judges", createJudge);
 router.patch("/judges/:id", updateJudge);
@@ -56,9 +61,14 @@ router.delete("/judges/:id", deleteJudge);
 // Teams (scoped by round)
 router.get("/rounds/:roundId/teams", getTeams);
 router.post("/rounds/:roundId/teams", createTeam);
+router.post("/rounds/:roundId/teams/import-one", importSingleTeam);
 router.patch("/teams/:id", updateTeam);
 router.put("/teams/:id", updateTeam);
 router.delete("/teams/:id", deleteTeam);
+
+// External DB Import (admin-provided any MongoDB URI)
+router.post("/external-db/connect", connectExternalDb);
+router.post("/external-db/preview", previewExternalDbTeams);
 
 // Criteria (scoped by round)
 router.get("/rounds/:roundId/criteria", getCriteria);

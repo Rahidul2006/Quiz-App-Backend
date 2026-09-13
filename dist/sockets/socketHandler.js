@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.emitToEventRoom = exports.getIO = exports.initSocket = void 0;
+exports.emitToJudgingRoom = exports.emitToEventRoom = exports.getIO = exports.initSocket = void 0;
 let ioInstance = null;
 const initSocket = (io) => {
     ioInstance = io;
@@ -18,6 +18,14 @@ const initSocket = (io) => {
                 const room = `event:${eventId}`;
                 socket.leave(room);
             }
+        });
+        // Join global judging room (for judges & admin)
+        socket.on("join:judging", () => {
+            socket.join("judging:global");
+        });
+        // Leave global judging room
+        socket.on("leave:judging", () => {
+            socket.leave("judging:global");
         });
         socket.on("disconnect", () => {
             // Disconnected cleanly
@@ -39,3 +47,10 @@ const emitToEventRoom = (eventId, eventName, data) => {
     }
 };
 exports.emitToEventRoom = emitToEventRoom;
+// Global Judging Room Dispatcher
+const emitToJudgingRoom = (eventName, data) => {
+    if (ioInstance) {
+        ioInstance.to("judging:global").emit(eventName, data);
+    }
+};
+exports.emitToJudgingRoom = emitToJudgingRoom;

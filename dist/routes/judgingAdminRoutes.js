@@ -13,8 +13,9 @@ router.get("/rounds/:id", judgingAdminController_1.getRoundById);
 router.patch("/rounds/:id", judgingAdminController_1.updateRound);
 router.put("/rounds/:id", judgingAdminController_1.updateRound);
 router.post("/rounds/:id/toggle-lock", judgingAdminController_1.toggleLockRound);
+router.post("/rounds/:id/set-active", judgingAdminController_1.setActiveRound);
 router.delete("/rounds/:id", judgingAdminController_1.deleteRound);
-// Judges
+// Judges (global — not per-round)
 router.get("/judges", judgingAdminController_1.getJudges);
 router.post("/judges", judgingAdminController_1.createJudge);
 router.patch("/judges/:id", judgingAdminController_1.updateJudge);
@@ -25,9 +26,13 @@ router.delete("/judges/:id", judgingAdminController_1.deleteJudge);
 // Teams (scoped by round)
 router.get("/rounds/:roundId/teams", judgingAdminController_1.getTeams);
 router.post("/rounds/:roundId/teams", judgingAdminController_1.createTeam);
+router.post("/rounds/:roundId/teams/import-one", judgingAdminController_1.importSingleTeam);
 router.patch("/teams/:id", judgingAdminController_1.updateTeam);
 router.put("/teams/:id", judgingAdminController_1.updateTeam);
 router.delete("/teams/:id", judgingAdminController_1.deleteTeam);
+// External DB Import (admin-provided any MongoDB URI)
+router.post("/external-db/connect", judgingAdminController_1.connectExternalDb);
+router.post("/external-db/preview", judgingAdminController_1.previewExternalDbTeams);
 // Criteria (scoped by round)
 router.get("/rounds/:roundId/criteria", judgingAdminController_1.getCriteria);
 router.post("/rounds/:roundId/criteria", judgingAdminController_1.createCriterion);

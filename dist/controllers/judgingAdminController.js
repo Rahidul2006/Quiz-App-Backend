@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getJudgeScoreDetail = exports.getTeamScoreDetail = exports.getJudgingResults = exports.getJudgingOverview = exports.clearAssignments = exports.saveAssignments = exports.getAssignments = exports.deleteCriterion = exports.updateCriterion = exports.createCriterion = exports.getCriteria = exports.deleteTeam = exports.updateTeam = exports.createTeam = exports.getTeams = exports.deleteJudge = exports.toggleJudgeStatus = exports.regenerateJudgePassword = exports.updateJudge = exports.createJudge = exports.getJudges = exports.deleteRound = exports.toggleLockRound = exports.updateRound = exports.createRound = exports.getRoundById = exports.getRounds = void 0;
+exports.getJudgeScoreDetail = exports.getTeamScoreDetail = exports.getJudgingResults = exports.getJudgingOverview = exports.clearAssignments = exports.saveAssignments = exports.getAssignments = exports.deleteCriterion = exports.updateCriterion = exports.createCriterion = exports.getCriteria = exports.deleteTeam = exports.updateTeam = exports.createTeam = exports.importSingleTeam = exports.previewExternalDbTeams = exports.connectExternalDb = exports.setActiveRound = exports.getTeams = exports.deleteJudge = exports.toggleJudgeStatus = exports.regenerateJudgePassword = exports.updateJudge = exports.createJudge = exports.getJudges = exports.deleteRound = exports.toggleLockRound = exports.updateRound = exports.createRound = exports.getRoundById = exports.getRounds = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const crypto_1 = __importDefault(require("crypto"));
 const JudgingRound_1 = require("../models/JudgingRound");
@@ -12,6 +12,8 @@ const JudgingTeam_1 = require("../models/JudgingTeam");
 const JudgingCriterion_1 = require("../models/JudgingCriterion");
 const JudgeAssignment_1 = require("../models/JudgeAssignment");
 const Evaluation_1 = require("../models/Evaluation");
+const socketHandler_1 = require("../sockets/socketHandler");
+const externalDbService_1 = require("../services/externalDbService");
 // ==========================================
 // 1. ROUND MANAGEMENT
 // ==========================================
@@ -89,6 +91,22 @@ const updateRound = async (req, res) => {
         if (status !== undefined)
             round.status = status;
         await round.save();
+        (0, socketHandler_1.emitToJudgingRoom)("judging:round_updated", {
+            roundId: round._id.toString(),
+            roundName: round.name,
+            isLocked: round.isLocked,
+            status: round.status,
+            evaluationMode: round.evaluationMode,
+            allowJudgeEditAfterSubmit: round.allowJudgeEditAfterSubmit,
+        });
+        if (isLocked !== undefined) {
+            (0, socketHandler_1.emitToJudgingRoom)("judging:lock_changed", {
+                roundId: round._id.toString(),
+                roundName: round.name,
+                isLocked: round.isLocked,
+                status: round.status,
+            });
+        }
         res.json({ ...round.toObject(), id: round._id });
     }
     catch (error) {
@@ -107,6 +125,20 @@ const toggleLockRound = async (req, res) => {
         round.isLocked = !round.isLocked;
         round.status = round.isLocked ? "locked" : "active";
         await round.save();
+        (0, socketHandler_1.emitToJudgingRoom)("judging:lock_changed", {
+            roundId: round._id.toString(),
+            roundName: round.name,
+            isLocked: round.isLocked,
+            status: round.status,
+        });
+        (0, socketHandler_1.emitToJudgingRoom)("judging:round_updated", {
+            roundId: round._id.toString(),
+            roundName: round.name,
+            isLocked: round.isLocked,
+            status: round.status,
+            evaluationMode: round.evaluationMode,
+            allowJudgeEditAfterSubmit: round.allowJudgeEditAfterSubmit,
+        });
         res.json({
             message: round.isLocked ? "Judging locked successfully" : "Judging reopened successfully",
             isLocked: round.isLocked,
@@ -139,12 +171,8 @@ exports.deleteRound = deleteRound;
 // ==========================================
 const getJudges = async (req, res) => {
     try {
-        const { roundId } = req.query;
-        const filter = {};
-        if (roundId) {
-            filter.$or = [{ roundId }, { roundId: null }];
-        }
-        const judges = await Judge_1.Judge.find(filter).select("-passwordHash").sort({ createdAt: 1 });
+        // Judges are global — no round filtering. All judges evaluate the active round.
+        const judges = await Judge_1.Judge.find({}).select("-passwordHash").sort({ createdAt: 1 });
         res.json(judges.map((j) => ({ ...j.toObject(), id: j._id })));
     }
     catch (error) {
@@ -270,6 +298,10 @@ const toggleJudgeStatus = async (req, res) => {
         }
         judge.status = judge.status === "active" ? "disabled" : "active";
         await judge.save();
+        (0, socketHandler_1.emitToJudgingRoom)("judging:judge_status_changed", {
+            judgeId: judge._id.toString(),
+            status: judge.status,
+        });
         res.json({
             message: `Judge status changed to ${judge.status}`,
             status: judge.status,
@@ -308,6 +340,135 @@ const getTeams = async (req, res) => {
     }
 };
 exports.getTeams = getTeams;
+/**
+ * Set a round as the active (primary) round.
+ * Marks all other rounds as draft status and broadcasts to all judges via Socket.IO.
+ */
+const setActiveRound = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const round = await JudgingRound_1.JudgingRound.findById(id);
+        if (!round) {
+            res.status(404).json({ message: "Round not found" });
+            return;
+        }
+        // Before activating requested round, make every other round inactive/draft
+        // Ensures database ends with exactly ONE status: "active" round
+        await JudgingRound_1.JudgingRound.updateMany({ _id: { $ne: id } }, { status: "draft" });
+        // Save requested round as status: "active"
+        round.status = "active";
+        await round.save();
+        // Broadcast exactly one judging:round_switched event
+        (0, socketHandler_1.emitToJudgingRoom)("judging:round_switched", {
+            roundId: round._id.toString(),
+            roundName: round.name,
+            isLocked: round.isLocked,
+            switchedAt: new Date(),
+        });
+        res.json({
+            message: `Round '${round.name}' is now the active judging round. All judges will be notified.`,
+            round: { ...round.toObject(), id: round._id },
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message || "Failed to set active round" });
+    }
+};
+exports.setActiveRound = setActiveRound;
+// ==========================================
+// 3b. EXTERNAL DB IMPORT (Dynamic — Any MongoDB)
+// ==========================================
+/**
+ * Connect to any external MongoDB URI and list its collections.
+ * Body: { uri: string, dbName?: string }
+ */
+const connectExternalDb = async (req, res) => {
+    try {
+        const { uri, dbName } = req.body;
+        if (!uri || !uri.trim()) {
+            res.status(400).json({ message: "MongoDB URI is required" });
+            return;
+        }
+        const collections = await (0, externalDbService_1.listExternalCollections)(uri.trim(), dbName?.trim() || undefined);
+        res.json({
+            success: true,
+            collections,
+            dbName: dbName?.trim() || null,
+        });
+    }
+    catch (error) {
+        const msg = error.message || "Failed to connect to external database";
+        res.status(500).json({
+            message: `Connection failed: ${msg}`,
+        });
+    }
+};
+exports.connectExternalDb = connectExternalDb;
+/**
+ * Preview teams from a specific collection in an external MongoDB.
+ * Body: { uri, dbName?, collection, teamNameField?, projectField?, membersField? }
+ */
+const previewExternalDbTeams = async (req, res) => {
+    try {
+        const { uri, dbName, collection, teamNameField, projectField, membersField } = req.body;
+        if (!uri || !uri.trim()) {
+            res.status(400).json({ message: "MongoDB URI is required" });
+            return;
+        }
+        if (!collection || !collection.trim()) {
+            res.status(400).json({ message: "Collection name is required" });
+            return;
+        }
+        const teams = await (0, externalDbService_1.fetchTeamsFromCollection)(uri.trim(), dbName?.trim() || undefined, collection.trim(), {
+            teamNameField: teamNameField?.trim() || undefined,
+            projectField: projectField?.trim() || undefined,
+            membersField: membersField?.trim() || undefined,
+            limit: 200,
+        });
+        res.json({
+            success: true,
+            count: teams.length,
+            teams,
+        });
+    }
+    catch (error) {
+        const msg = error.message || "Failed to preview teams from external database";
+        res.status(500).json({ message: msg });
+    }
+};
+exports.previewExternalDbTeams = previewExternalDbTeams;
+/**
+ * Import a single team from external data into a round.
+ * Body: { teamName, projectName, members, memberDetails?, teamCodePrefix? }
+ */
+const importSingleTeam = async (req, res) => {
+    try {
+        const { roundId } = req.params;
+        const { teamName, projectName, members, memberDetails, teamCodePrefix } = req.body;
+        if (!teamName || !teamName.trim()) {
+            res.status(400).json({ message: "teamName is required" });
+            return;
+        }
+        const round = await JudgingRound_1.JudgingRound.findById(roundId);
+        if (!round) {
+            res.status(404).json({ message: "Round not found" });
+            return;
+        }
+        const teamData = {
+            teamName: teamName.trim(),
+            projectName: (projectName || "").trim() || `${teamName.trim()} Project`,
+            members: (members || "").trim(),
+            memberCount: Array.isArray(memberDetails) ? memberDetails.length : 0,
+            memberDetails: Array.isArray(memberDetails) ? memberDetails : [],
+        };
+        const team = await (0, externalDbService_1.importSingleTeamToRound)(roundId, teamData, teamCodePrefix?.trim() || "EXT");
+        res.status(201).json({ ...team.toObject(), id: team._id });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message || "Failed to import team" });
+    }
+};
+exports.importSingleTeam = importSingleTeam;
 const createTeam = async (req, res) => {
     try {
         const { roundId } = req.params;
@@ -412,6 +573,7 @@ const createCriterion = async (req, res) => {
             description: description ? description.trim() : "",
             orderIndex: count,
         });
+        (0, socketHandler_1.emitToJudgingRoom)("judging:criteria_updated", { roundId });
         res.status(201).json({ ...criterion.toObject(), id: criterion._id });
     }
     catch (error) {
@@ -437,6 +599,7 @@ const updateCriterion = async (req, res) => {
         if (orderIndex !== undefined)
             criterion.orderIndex = Number(orderIndex);
         await criterion.save();
+        (0, socketHandler_1.emitToJudgingRoom)("judging:criteria_updated", { roundId: criterion.roundId.toString() });
         res.json({ ...criterion.toObject(), id: criterion._id });
     }
     catch (error) {
@@ -447,7 +610,12 @@ exports.updateCriterion = updateCriterion;
 const deleteCriterion = async (req, res) => {
     try {
         const { id } = req.params;
+        const criterion = await JudgingCriterion_1.JudgingCriterion.findById(id);
+        const roundId = criterion ? criterion.roundId.toString() : null;
         await JudgingCriterion_1.JudgingCriterion.findByIdAndDelete(id);
+        if (roundId) {
+            (0, socketHandler_1.emitToJudgingRoom)("judging:criteria_updated", { roundId });
+        }
         res.json({ message: "Criterion deleted successfully" });
     }
     catch (error) {
@@ -487,6 +655,7 @@ const saveAssignments = async (req, res) => {
             }));
             await JudgeAssignment_1.JudgeAssignment.create(docs);
         }
+        (0, socketHandler_1.emitToJudgingRoom)("judging:assignments_updated", { roundId });
         const updated = await JudgeAssignment_1.JudgeAssignment.find({ roundId });
         res.json({
             message: "Assignments updated successfully",
@@ -502,6 +671,7 @@ const clearAssignments = async (req, res) => {
     try {
         const { roundId } = req.params;
         await JudgeAssignment_1.JudgeAssignment.deleteMany({ roundId });
+        (0, socketHandler_1.emitToJudgingRoom)("judging:assignments_updated", { roundId });
         res.json({ message: "Assignments cleared successfully" });
     }
     catch (error) {
@@ -521,10 +691,8 @@ const getJudgingOverview = async (req, res) => {
             return;
         }
         const teams = await JudgingTeam_1.JudgingTeam.find({ roundId });
-        const judges = await Judge_1.Judge.find({
-            $or: [{ roundId }, { roundId: null }],
-            status: "active",
-        });
+        // Judges are global — fetch all active judges regardless of roundId
+        const judges = await Judge_1.Judge.find({ status: "active" }).sort({ tieBreakPriority: 1 });
         const assignments = await JudgeAssignment_1.JudgeAssignment.find({ roundId });
         const evaluations = await Evaluation_1.Evaluation.find({ roundId });
         const totalTeams = teams.length;
@@ -602,9 +770,8 @@ const getJudgingResults = async (req, res) => {
             return;
         }
         const teams = await JudgingTeam_1.JudgingTeam.find({ roundId }).sort({ orderIndex: 1 });
-        const judges = await Judge_1.Judge.find({
-            $or: [{ roundId }, { roundId: null }],
-        }).sort({ tieBreakPriority: 1 });
+        // Judges are global — fetch all judges regardless of roundId
+        const judges = await Judge_1.Judge.find({}).sort({ tieBreakPriority: 1 });
         const evaluations = await Evaluation_1.Evaluation.find({ roundId, status: "SUBMITTED" });
         const criteria = await JudgingCriterion_1.JudgingCriterion.find({ roundId }).sort({ orderIndex: 1 });
         const totalMaxScore = criteria.reduce((sum, c) => sum + (c.maxScore || 0), 0);
@@ -703,9 +870,8 @@ const getTeamScoreDetail = async (req, res) => {
         }
         const round = await JudgingRound_1.JudgingRound.findById(team.roundId);
         const criteria = await JudgingCriterion_1.JudgingCriterion.find({ roundId: team.roundId }).sort({ orderIndex: 1 });
-        const judges = await Judge_1.Judge.find({
-            $or: [{ roundId: team.roundId }, { roundId: null }],
-        });
+        // Judges are global — fetch all judges
+        const judges = await Judge_1.Judge.find({});
         const evaluations = await Evaluation_1.Evaluation.find({ teamId, status: "SUBMITTED" });
         // Criteria × Judge matrix
         const matrix = criteria.map((criterion) => {
