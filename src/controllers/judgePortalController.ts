@@ -15,15 +15,10 @@ export const getAssignedTeams = async (req: JudgeAuthRequest, res: Response): Pr
 
     const judgeId = req.judge.id;
 
-    // Determine target round: judge's round or latest active round
-    let round = null;
-    if (req.judge.roundId) {
-      round = await JudgingRound.findById(req.judge.roundId);
-    }
+    // The Admin-selected active round is the authoritative source of truth for the Judge Portal
+    let round = await JudgingRound.findOne({ status: "active" });
     if (!round) {
-      round = await JudgingRound.findOne({ status: "active" }).sort({ createdAt: -1 });
-    }
-    if (!round) {
+      // Fallback if no round has been marked active yet
       round = await JudgingRound.findOne().sort({ createdAt: -1 });
     }
 
@@ -79,8 +74,11 @@ export const getAssignedTeams = async (req: JudgeAuthRequest, res: Response): Pr
     res.json({
       round: {
         id: round._id,
+        _id: round._id,
         name: round.name,
+        status: round.status,
         isLocked: round.isLocked,
+        evaluationMode: round.evaluationMode,
         allowJudgeEditAfterSubmit: round.allowJudgeEditAfterSubmit,
       },
       stats: {
@@ -210,6 +208,16 @@ export const saveDraftEvaluation = async (req: JudgeAuthRequest, res: Response):
       return;
     }
 
+    // Safety guard: Verify that the evaluated team's round is the currently active round
+    const activeRound = await JudgingRound.findOne({ status: "active" });
+    if (activeRound && activeRound._id.toString() !== team.roundId.toString()) {
+      res.status(409).json({
+        message: `This judging round is no longer active. The active round has been changed to "${activeRound.name}".`,
+        activeRoundId: activeRound._id.toString(),
+      });
+      return;
+    }
+
     if (round.isLocked) {
       res.status(403).json({ message: "Forbidden: Judging is locked by the administrator" });
       return;
@@ -330,6 +338,17 @@ export const submitEvaluation = async (req: JudgeAuthRequest, res: Response): Pr
     const round = await JudgingRound.findById(team.roundId);
     if (!round) {
       res.status(404).json({ message: "Judging round not found" });
+      return;
+    }
+
+    // Safety guard: Verify that the evaluated team's round is the currently active round
+    const activeRound = await JudgingRound.findOne({ status: "active" });
+    if (activeRound && activeRound._id.toString() !== team.roundId.toString()) {
+      res.status(409).json({
+        message: `This judging round is no longer active. The administrator switched the active round to "${activeRound.name}".`,
+        activeRoundId: activeRound._id.toString(),
+        activeRoundName: activeRound.name,
+      });
       return;
     }
 

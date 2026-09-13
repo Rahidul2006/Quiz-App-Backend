@@ -7,7 +7,12 @@ import { JudgingTeam } from "../models/JudgingTeam";
 import { JudgingCriterion } from "../models/JudgingCriterion";
 import { JudgeAssignment } from "../models/JudgeAssignment";
 import { Evaluation } from "../models/Evaluation";
-import { fetchCodecraftTeams, syncCodecraftTeamsToRound } from "../services/codecraftService";
+import { emitToJudgingRoom } from "../sockets/socketHandler";
+import {
+  listExternalCollections,
+  fetchTeamsFromCollection,
+  importSingleTeamToRound,
+} from "../services/externalDbService";
 
 // ==========================================
 // 1. ROUND MANAGEMENT
@@ -83,6 +88,24 @@ export const updateRound = async (req: Request, res: Response): Promise<void> =>
     if (status !== undefined) round.status = status;
 
     await round.save();
+
+    emitToJudgingRoom("judging:round_updated", {
+      roundId: round._id.toString(),
+      roundName: round.name,
+      isLocked: round.isLocked,
+      status: round.status,
+      evaluationMode: round.evaluationMode,
+      allowJudgeEditAfterSubmit: round.allowJudgeEditAfterSubmit,
+    });
+    if (isLocked !== undefined) {
+      emitToJudgingRoom("judging:lock_changed", {
+        roundId: round._id.toString(),
+        roundName: round.name,
+        isLocked: round.isLocked,
+        status: round.status,
+      });
+    }
+
     res.json({ ...round.toObject(), id: round._id });
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to update round" });
@@ -101,6 +124,21 @@ export const toggleLockRound = async (req: Request, res: Response): Promise<void
     round.isLocked = !round.isLocked;
     round.status = round.isLocked ? "locked" : "active";
     await round.save();
+
+    emitToJudgingRoom("judging:lock_changed", {
+      roundId: round._id.toString(),
+      roundName: round.name,
+      isLocked: round.isLocked,
+      status: round.status,
+    });
+    emitToJudgingRoom("judging:round_updated", {
+      roundId: round._id.toString(),
+      roundName: round.name,
+      isLocked: round.isLocked,
+      status: round.status,
+      evaluationMode: round.evaluationMode,
+      allowJudgeEditAfterSubmit: round.allowJudgeEditAfterSubmit,
+    });
 
     res.json({
       message: round.isLocked ? "Judging locked successfully" : "Judging reopened successfully",
@@ -134,13 +172,8 @@ export const deleteRound = async (req: Request, res: Response): Promise<void> =>
 
 export const getJudges = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { roundId } = req.query;
-    const filter: any = {};
-    if (roundId) {
-      filter.$or = [{ roundId }, { roundId: null }];
-    }
-
-    const judges = await Judge.find(filter).select("-passwordHash").sort({ createdAt: 1 });
+    // Judges are global — no round filtering. All judges evaluate the active round.
+    const judges = await Judge.find({}).select("-passwordHash").sort({ createdAt: 1 });
     res.json(judges.map((j) => ({ ...j.toObject(), id: j._id })));
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to fetch judges" });
@@ -270,6 +303,11 @@ export const toggleJudgeStatus = async (req: Request, res: Response): Promise<vo
     judge.status = judge.status === "active" ? "disabled" : "active";
     await judge.save();
 
+    emitToJudgingRoom("judging:judge_status_changed", {
+      judgeId: judge._id.toString(),
+      status: judge.status,
+    });
+
     res.json({
       message: `Judge status changed to ${judge.status}`,
       status: judge.status,
@@ -300,14 +338,6 @@ export const deleteJudge = async (req: Request, res: Response): Promise<void> =>
 export const getTeams = async (req: Request, res: Response): Promise<void> => {
   try {
     const { roundId } = req.params;
-
-    // Every time admin requests/refreshes teams, fetch and sync the latest data from CodeCraft DB (Read-Only)
-    try {
-      await syncCodecraftTeamsToRound(roundId);
-    } catch (syncError: any) {
-      console.warn("[getTeams] Auto-sync with Codecraft URI warning:", syncError.message);
-    }
-
     const teams = await JudgingTeam.find({ roundId }).sort({ orderIndex: 1, teamCode: 1 });
     res.json(teams.map((t) => ({ ...t.toObject(), id: t._id })));
   } catch (error: any) {
@@ -316,35 +346,147 @@ export const getTeams = async (req: Request, res: Response): Promise<void> => {
 };
 
 /**
- * Live preview of teams directly from the external CodeCraft MongoDB URI (Read-Only).
+ * Set a round as the active (primary) round.
+ * Marks all other rounds as draft status and broadcasts to all judges via Socket.IO.
  */
-export const getCodecraftLiveTeams = async (req: Request, res: Response): Promise<void> => {
+export const setActiveRound = async (req: Request, res: Response): Promise<void> => {
   try {
-    const teams = await fetchCodecraftTeams();
+    const { id } = req.params;
+    const round = await JudgingRound.findById(id);
+    if (!round) {
+      res.status(404).json({ message: "Round not found" });
+      return;
+    }
+
+    // Before activating requested round, make every other round inactive/draft
+    // Ensures database ends with exactly ONE status: "active" round
+    await JudgingRound.updateMany(
+      { _id: { $ne: id } },
+      { status: "draft" }
+    );
+
+    // Save requested round as status: "active"
+    round.status = "active";
+    await round.save();
+
+    // Broadcast exactly one judging:round_switched event
+    emitToJudgingRoom("judging:round_switched", {
+      roundId: round._id.toString(),
+      roundName: round.name,
+      isLocked: round.isLocked,
+      switchedAt: new Date(),
+    });
+
+    res.json({
+      message: `Round '${round.name}' is now the active judging round. All judges will be notified.`,
+      round: { ...round.toObject(), id: round._id },
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message || "Failed to set active round" });
+  }
+};
+
+// ==========================================
+// 3b. EXTERNAL DB IMPORT (Dynamic — Any MongoDB)
+// ==========================================
+
+/**
+ * Connect to any external MongoDB URI and list its collections.
+ * Body: { uri: string, dbName?: string }
+ */
+export const connectExternalDb = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { uri, dbName } = req.body;
+    if (!uri || !uri.trim()) {
+      res.status(400).json({ message: "MongoDB URI is required" });
+      return;
+    }
+
+    const collections = await listExternalCollections(uri.trim(), dbName?.trim() || undefined);
+    res.json({
+      success: true,
+      collections,
+      dbName: dbName?.trim() || null,
+    });
+  } catch (error: any) {
+    const msg = error.message || "Failed to connect to external database";
+    res.status(500).json({
+      message: `Connection failed: ${msg}`,
+    });
+  }
+};
+
+/**
+ * Preview teams from a specific collection in an external MongoDB.
+ * Body: { uri, dbName?, collection, teamNameField?, projectField?, membersField? }
+ */
+export const previewExternalDbTeams = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { uri, dbName, collection, teamNameField, projectField, membersField } = req.body;
+    if (!uri || !uri.trim()) {
+      res.status(400).json({ message: "MongoDB URI is required" });
+      return;
+    }
+    if (!collection || !collection.trim()) {
+      res.status(400).json({ message: "Collection name is required" });
+      return;
+    }
+
+    const teams = await fetchTeamsFromCollection(
+      uri.trim(),
+      dbName?.trim() || undefined,
+      collection.trim(),
+      {
+        teamNameField: teamNameField?.trim() || undefined,
+        projectField: projectField?.trim() || undefined,
+        membersField: membersField?.trim() || undefined,
+        limit: 200,
+      }
+    );
+
     res.json({
       success: true,
       count: teams.length,
       teams,
     });
   } catch (error: any) {
-    res.status(500).json({ message: error.message || "Failed to fetch live teams from CodeCraft DB" });
+    const msg = error.message || "Failed to preview teams from external database";
+    res.status(500).json({ message: msg });
   }
 };
 
 /**
- * Manually trigger synchronization of CodeCraft teams into the current judging round.
+ * Import a single team from external data into a round.
+ * Body: { teamName, projectName, members, memberDetails?, teamCodePrefix? }
  */
-export const syncCodecraftTeams = async (req: Request, res: Response): Promise<void> => {
+export const importSingleTeam = async (req: Request, res: Response): Promise<void> => {
   try {
     const { roundId } = req.params;
-    const result = await syncCodecraftTeamsToRound(roundId);
-    res.json({
-      message: `Successfully fetched and synced ${result.syncedCount} teams from CodeCraft DB (${result.createdCount} new, ${result.updatedCount} updated).`,
-      ...result,
-      teams: result.teams.map((t) => ({ ...t.toObject(), id: t._id })),
-    });
+    const { teamName, projectName, members, memberDetails, teamCodePrefix } = req.body;
+
+    if (!teamName || !teamName.trim()) {
+      res.status(400).json({ message: "teamName is required" });
+      return;
+    }
+
+    const round = await JudgingRound.findById(roundId);
+    if (!round) {
+      res.status(404).json({ message: "Round not found" });
+      return;
+    }
+
+    const teamData = {
+      teamName: teamName.trim(),
+      projectName: (projectName || "").trim() || `${teamName.trim()} Project`,
+      members: (members || "").trim(),
+      memberCount: Array.isArray(memberDetails) ? memberDetails.length : 0,
+      memberDetails: Array.isArray(memberDetails) ? memberDetails : [],
+    };
+
+    const team = await importSingleTeamToRound(roundId, teamData, teamCodePrefix?.trim() || "EXT");
+    res.status(201).json({ ...team.toObject(), id: team._id });
   } catch (error: any) {
-    res.status(500).json({ message: error.message || "Failed to sync CodeCraft teams" });
+    res.status(500).json({ message: error.message || "Failed to import team" });
   }
 };
 
@@ -456,6 +598,8 @@ export const createCriterion = async (req: Request, res: Response): Promise<void
       orderIndex: count,
     });
 
+    emitToJudgingRoom("judging:criteria_updated", { roundId });
+
     res.status(201).json({ ...criterion.toObject(), id: criterion._id });
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to create criterion" });
@@ -479,6 +623,9 @@ export const updateCriterion = async (req: Request, res: Response): Promise<void
     if (orderIndex !== undefined) criterion.orderIndex = Number(orderIndex);
 
     await criterion.save();
+
+    emitToJudgingRoom("judging:criteria_updated", { roundId: criterion.roundId.toString() });
+
     res.json({ ...criterion.toObject(), id: criterion._id });
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to update criterion" });
@@ -488,7 +635,14 @@ export const updateCriterion = async (req: Request, res: Response): Promise<void
 export const deleteCriterion = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
+    const criterion = await JudgingCriterion.findById(id);
+    const roundId = criterion ? criterion.roundId.toString() : null;
     await JudgingCriterion.findByIdAndDelete(id);
+
+    if (roundId) {
+      emitToJudgingRoom("judging:criteria_updated", { roundId });
+    }
+
     res.json({ message: "Criterion deleted successfully" });
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to delete criterion" });
@@ -531,6 +685,8 @@ export const saveAssignments = async (req: Request, res: Response): Promise<void
       await JudgeAssignment.create(docs);
     }
 
+    emitToJudgingRoom("judging:assignments_updated", { roundId });
+
     const updated = await JudgeAssignment.find({ roundId });
     res.json({
       message: "Assignments updated successfully",
@@ -545,6 +701,9 @@ export const clearAssignments = async (req: Request, res: Response): Promise<voi
   try {
     const { roundId } = req.params;
     await JudgeAssignment.deleteMany({ roundId });
+
+    emitToJudgingRoom("judging:assignments_updated", { roundId });
+
     res.json({ message: "Assignments cleared successfully" });
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to delete assignments" });
@@ -565,10 +724,8 @@ export const getJudgingOverview = async (req: Request, res: Response): Promise<v
     }
 
     const teams = await JudgingTeam.find({ roundId });
-    const judges = await Judge.find({
-      $or: [{ roundId }, { roundId: null }],
-      status: "active",
-    });
+    // Judges are global — fetch all active judges regardless of roundId
+    const judges = await Judge.find({ status: "active" }).sort({ tieBreakPriority: 1 });
     const assignments = await JudgeAssignment.find({ roundId });
     const evaluations = await Evaluation.find({ roundId });
 
@@ -660,9 +817,8 @@ export const getJudgingResults = async (req: Request, res: Response): Promise<vo
     }
 
     const teams = await JudgingTeam.find({ roundId }).sort({ orderIndex: 1 });
-    const judges = await Judge.find({
-      $or: [{ roundId }, { roundId: null }],
-    }).sort({ tieBreakPriority: 1 });
+    // Judges are global — fetch all judges regardless of roundId
+    const judges = await Judge.find({}).sort({ tieBreakPriority: 1 });
     const evaluations = await Evaluation.find({ roundId, status: "SUBMITTED" });
     const criteria = await JudgingCriterion.find({ roundId }).sort({ orderIndex: 1 });
 
@@ -777,9 +933,8 @@ export const getTeamScoreDetail = async (req: Request, res: Response): Promise<v
 
     const round = await JudgingRound.findById(team.roundId);
     const criteria = await JudgingCriterion.find({ roundId: team.roundId }).sort({ orderIndex: 1 });
-    const judges = await Judge.find({
-      $or: [{ roundId: team.roundId }, { roundId: null }],
-    });
+    // Judges are global — fetch all judges
+    const judges = await Judge.find({});
     const evaluations = await Evaluation.find({ teamId, status: "SUBMITTED" });
 
     // Criteria × Judge matrix

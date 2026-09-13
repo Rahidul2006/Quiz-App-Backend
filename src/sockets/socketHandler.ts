@@ -22,6 +22,16 @@ export const initSocket = (io: SocketIOServer): void => {
       }
     });
 
+    // Join global judging room (for judges & admin)
+    socket.on("join:judging", () => {
+      socket.join("judging:global");
+    });
+
+    // Leave global judging room
+    socket.on("leave:judging", () => {
+      socket.leave("judging:global");
+    });
+
     socket.on("disconnect", () => {
       // Disconnected cleanly
     });
@@ -39,5 +49,12 @@ export const getIO = (): SocketIOServer => {
 export const emitToEventRoom = (eventId: string, eventName: string, data: any): void => {
   if (ioInstance) {
     ioInstance.to(`event:${eventId}`).emit(eventName, data);
+  }
+};
+
+// Global Judging Room Dispatcher
+export const emitToJudgingRoom = (eventName: string, data: any): void => {
+  if (ioInstance) {
+    ioInstance.to("judging:global").emit(eventName, data);
   }
 };
