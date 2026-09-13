@@ -20,18 +20,55 @@ export interface ExternalTeamData {
   rawData?: Record<string, any>; // Original raw document for reference
 }
 
-// Connection pool (keyed by URI) — no persistent cache across requests
+// Connection pool (keyed by URI + DB) — no persistent cache across requests
 const connectionPool = new Map<string, mongoose.Connection>();
 
 /**
- * Creates a fresh read-only connection to any external MongoDB URI.
- * Caches by URI to avoid duplicate connections within the same server session.
+ * Extracts database name from a MongoDB connection string (URI).
+ * Examples:
+ *   mongodb+srv://user:pass@cluster.mongodb.net/codecraft?appName=Cluster0 -> "codecraft"
+ *   mongodb://localhost:27017/my_db -> "my_db"
+ *   mongodb+srv://user:pass@cluster.mongodb.net/?appName=Cluster0 -> null
+ */
+export const extractDbNameFromUri = (uri: string): string | null => {
+  try {
+    const match = uri.match(/^mongodb(?:\+srv)?:\/\/[^/]+\/([^?/\s]+)/i);
+    if (match && match[1]) {
+      const db = decodeURIComponent(match[1]).trim();
+      if (db) return db;
+    }
+  } catch {
+    // fallback
+  }
+  return null;
+};
+
+/**
+ * Database selection priority:
+ * 1. Explicit dbName parameter if provided
+ * 2. Database name parsed from the MongoDB URI
+ * 3. Throw a clear error if neither exists
+ */
+export const resolveDatabaseName = (uri: string, dbName?: string): string => {
+  if (dbName && dbName.trim()) {
+    return dbName.trim();
+  }
+  const fromUri = extractDbNameFromUri(uri);
+  if (fromUri && fromUri.trim()) {
+    return fromUri.trim();
+  }
+  throw new Error("Database name is required. Enter the database name or include it in the MongoDB URI.");
+};
+
+/**
+ * Creates a fresh read-only connection to any external MongoDB URI targeting the resolved database.
+ * Caches by URI + DB to avoid duplicate connections within the same server session.
  */
 export const getExternalConnection = async (
   uri: string,
-  dbName?: string
+  resolvedDbName: string
 ): Promise<mongoose.Connection> => {
-  const cacheKey = `${uri}|${dbName || ""}`;
+  const cacheKey = `${uri}|${resolvedDbName}`;
 
   // Return cached if still connected
   const cached = connectionPool.get(cacheKey);
@@ -42,10 +79,8 @@ export const getExternalConnection = async (
   const connOptions: mongoose.ConnectOptions = {
     serverSelectionTimeoutMS: 8000,
     connectTimeoutMS: 8000,
+    dbName: resolvedDbName,
   };
-  if (dbName) {
-    (connOptions as any).dbName = dbName;
-  }
 
   const conn = await mongoose
     .createConnection(uri, {
@@ -71,15 +106,26 @@ export const closeExternalConnection = async (uri: string, dbName?: string): Pro
 };
 
 /**
- * Lists all collection names in the external MongoDB database.
+ * Lists all collection names in the resolved external MongoDB database.
+ * Returns both the resolved database name and the sorted collection list.
  */
 export const listExternalCollections = async (
   uri: string,
   dbName?: string
-): Promise<string[]> => {
-  const conn = await getExternalConnection(uri, dbName);
-  const collections = await conn.db?.listCollections().toArray();
-  return (collections || []).map((c: any) => c.name).sort();
+): Promise<{ resolvedDbName: string; collections: string[] }> => {
+  const resolvedDbName = resolveDatabaseName(uri, dbName);
+  const conn = await getExternalConnection(uri, resolvedDbName);
+
+  // Explicitly query the resolved database from the native MongoClient
+  const targetDb = conn.getClient().db(resolvedDbName);
+  const collectionsList = await targetDb.listCollections().toArray();
+  const collections = (collectionsList || []).map((c: any) => c.name).sort();
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[ExternalDB] Resolved database: "${resolvedDbName}" | Found ${collections.length} collection(s)`);
+  }
+
+  return { resolvedDbName, collections };
 };
 
 /**
@@ -91,8 +137,10 @@ export const previewCollectionDocuments = async (
   collectionName: string,
   limit: number = 100
 ): Promise<Record<string, any>[]> => {
-  const conn = await getExternalConnection(uri, dbName);
-  const col = conn.collection(collectionName);
+  const resolvedDb = resolveDatabaseName(uri, dbName);
+  const conn = await getExternalConnection(uri, resolvedDb);
+  const targetDb = conn.getClient().db(resolvedDb);
+  const col = targetDb.collection(collectionName);
   return await col.find({}).limit(limit).toArray();
 };
 

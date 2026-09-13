@@ -402,14 +402,22 @@ export const connectExternalDb = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    const collections = await listExternalCollections(uri.trim(), dbName?.trim() || undefined);
+    const { resolvedDbName, collections } = await listExternalCollections(
+      uri.trim(),
+      dbName?.trim() || undefined
+    );
+
     res.json({
       success: true,
+      dbName: resolvedDbName,
       collections,
-      dbName: dbName?.trim() || null,
     });
   } catch (error: any) {
     const msg = error.message || "Failed to connect to external database";
+    if (msg.includes("Database name is required")) {
+      res.status(400).json({ message: msg });
+      return;
+    }
     res.status(500).json({
       message: `Connection failed: ${msg}`,
     });
@@ -451,6 +459,10 @@ export const previewExternalDbTeams = async (req: Request, res: Response): Promi
     });
   } catch (error: any) {
     const msg = error.message || "Failed to preview teams from external database";
+    if (msg.includes("Database name is required")) {
+      res.status(400).json({ message: msg });
+      return;
+    }
     res.status(500).json({ message: msg });
   }
 };

@@ -389,15 +389,19 @@ const connectExternalDb = async (req, res) => {
             res.status(400).json({ message: "MongoDB URI is required" });
             return;
         }
-        const collections = await (0, externalDbService_1.listExternalCollections)(uri.trim(), dbName?.trim() || undefined);
+        const { resolvedDbName, collections } = await (0, externalDbService_1.listExternalCollections)(uri.trim(), dbName?.trim() || undefined);
         res.json({
             success: true,
+            dbName: resolvedDbName,
             collections,
-            dbName: dbName?.trim() || null,
         });
     }
     catch (error) {
         const msg = error.message || "Failed to connect to external database";
+        if (msg.includes("Database name is required")) {
+            res.status(400).json({ message: msg });
+            return;
+        }
         res.status(500).json({
             message: `Connection failed: ${msg}`,
         });
@@ -433,6 +437,10 @@ const previewExternalDbTeams = async (req, res) => {
     }
     catch (error) {
         const msg = error.message || "Failed to preview teams from external database";
+        if (msg.includes("Database name is required")) {
+            res.status(400).json({ message: msg });
+            return;
+        }
         res.status(500).json({ message: msg });
     }
 };

@@ -3,17 +3,56 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importSingleTeamToRound = exports.fetchTeamsFromCollection = exports.documentToTeamData = exports.detectProjectField = exports.detectTeamNameField = exports.previewCollectionDocuments = exports.listExternalCollections = exports.closeExternalConnection = exports.getExternalConnection = void 0;
+exports.importSingleTeamToRound = exports.fetchTeamsFromCollection = exports.documentToTeamData = exports.detectProjectField = exports.detectTeamNameField = exports.previewCollectionDocuments = exports.listExternalCollections = exports.closeExternalConnection = exports.getExternalConnection = exports.resolveDatabaseName = exports.extractDbNameFromUri = void 0;
 const mongoose_1 = __importDefault(require("mongoose"));
 const JudgingTeam_1 = require("../models/JudgingTeam");
-// Connection pool (keyed by URI) — no persistent cache across requests
+// Connection pool (keyed by URI + DB) — no persistent cache across requests
 const connectionPool = new Map();
 /**
- * Creates a fresh read-only connection to any external MongoDB URI.
- * Caches by URI to avoid duplicate connections within the same server session.
+ * Extracts database name from a MongoDB connection string (URI).
+ * Examples:
+ *   mongodb+srv://user:pass@cluster.mongodb.net/codecraft?appName=Cluster0 -> "codecraft"
+ *   mongodb://localhost:27017/my_db -> "my_db"
+ *   mongodb+srv://user:pass@cluster.mongodb.net/?appName=Cluster0 -> null
  */
-const getExternalConnection = async (uri, dbName) => {
-    const cacheKey = `${uri}|${dbName || ""}`;
+const extractDbNameFromUri = (uri) => {
+    try {
+        const match = uri.match(/^mongodb(?:\+srv)?:\/\/[^/]+\/([^?/\s]+)/i);
+        if (match && match[1]) {
+            const db = decodeURIComponent(match[1]).trim();
+            if (db)
+                return db;
+        }
+    }
+    catch {
+        // fallback
+    }
+    return null;
+};
+exports.extractDbNameFromUri = extractDbNameFromUri;
+/**
+ * Database selection priority:
+ * 1. Explicit dbName parameter if provided
+ * 2. Database name parsed from the MongoDB URI
+ * 3. Throw a clear error if neither exists
+ */
+const resolveDatabaseName = (uri, dbName) => {
+    if (dbName && dbName.trim()) {
+        return dbName.trim();
+    }
+    const fromUri = (0, exports.extractDbNameFromUri)(uri);
+    if (fromUri && fromUri.trim()) {
+        return fromUri.trim();
+    }
+    throw new Error("Database name is required. Enter the database name or include it in the MongoDB URI.");
+};
+exports.resolveDatabaseName = resolveDatabaseName;
+/**
+ * Creates a fresh read-only connection to any external MongoDB URI targeting the resolved database.
+ * Caches by URI + DB to avoid duplicate connections within the same server session.
+ */
+const getExternalConnection = async (uri, resolvedDbName) => {
+    const cacheKey = `${uri}|${resolvedDbName}`;
     // Return cached if still connected
     const cached = connectionPool.get(cacheKey);
     if (cached && cached.readyState === 1) {
@@ -22,10 +61,8 @@ const getExternalConnection = async (uri, dbName) => {
     const connOptions = {
         serverSelectionTimeoutMS: 8000,
         connectTimeoutMS: 8000,
+        dbName: resolvedDbName,
     };
-    if (dbName) {
-        connOptions.dbName = dbName;
-    }
     const conn = await mongoose_1.default
         .createConnection(uri, {
         ...connOptions,
@@ -49,20 +86,30 @@ const closeExternalConnection = async (uri, dbName) => {
 };
 exports.closeExternalConnection = closeExternalConnection;
 /**
- * Lists all collection names in the external MongoDB database.
+ * Lists all collection names in the resolved external MongoDB database.
+ * Returns both the resolved database name and the sorted collection list.
  */
 const listExternalCollections = async (uri, dbName) => {
-    const conn = await (0, exports.getExternalConnection)(uri, dbName);
-    const collections = await conn.db?.listCollections().toArray();
-    return (collections || []).map((c) => c.name).sort();
+    const resolvedDbName = (0, exports.resolveDatabaseName)(uri, dbName);
+    const conn = await (0, exports.getExternalConnection)(uri, resolvedDbName);
+    // Explicitly query the resolved database from the native MongoClient
+    const targetDb = conn.getClient().db(resolvedDbName);
+    const collectionsList = await targetDb.listCollections().toArray();
+    const collections = (collectionsList || []).map((c) => c.name).sort();
+    if (process.env.NODE_ENV !== "production") {
+        console.log(`[ExternalDB] Resolved database: "${resolvedDbName}" | Found ${collections.length} collection(s)`);
+    }
+    return { resolvedDbName, collections };
 };
 exports.listExternalCollections = listExternalCollections;
 /**
  * Fetches raw documents from a collection (limited for preview).
  */
 const previewCollectionDocuments = async (uri, dbName, collectionName, limit = 100) => {
-    const conn = await (0, exports.getExternalConnection)(uri, dbName);
-    const col = conn.collection(collectionName);
+    const resolvedDb = (0, exports.resolveDatabaseName)(uri, dbName);
+    const conn = await (0, exports.getExternalConnection)(uri, resolvedDb);
+    const targetDb = conn.getClient().db(resolvedDb);
+    const col = targetDb.collection(collectionName);
     return await col.find({}).limit(limit).toArray();
 };
 exports.previewCollectionDocuments = previewCollectionDocuments;
