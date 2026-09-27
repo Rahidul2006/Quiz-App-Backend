@@ -17,6 +17,9 @@ export interface IActivity extends Document {
   activeQuestionIndex: number;
   options?: IPollOption[];
   questions?: IQuizQuestion[];
+  // Server-authoritative question timing (quiz only)
+  quizQuestionStartedAt?: Date | null;
+  quizQuestionEndsAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -108,6 +111,15 @@ const ActivitySchema = new Schema<IActivity>(
     activeQuestionIndex: {
       type: Number,
       default: 0,
+    },
+    // Server-authoritative question timer (quiz only)
+    quizQuestionStartedAt: {
+      type: Date,
+      default: null,
+    },
+    quizQuestionEndsAt: {
+      type: Date,
+      default: null,
     },
     options: [PollOptionSchema],
     questions: [QuizQuestionSchema],

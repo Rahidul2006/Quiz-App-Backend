@@ -829,37 +829,53 @@ export const getJudgingResults = async (req: Request, res: Response): Promise<vo
     }
 
     const teams = await JudgingTeam.find({ roundId }).sort({ orderIndex: 1 });
-    // Judges are global — fetch all judges regardless of roundId
+    // Judges sorted by tieBreakPriority (1 = highest priority in tie-break)
     const judges = await Judge.find({}).sort({ tieBreakPriority: 1 });
-    const evaluations = await Evaluation.find({ roundId, status: "SUBMITTED" });
+    // All evaluations (both DRAFT and SUBMITTED) to count expected vs submitted
+    const allEvaluations = await Evaluation.find({ roundId });
+    const submittedEvaluations = allEvaluations.filter((e) => e.status === "SUBMITTED");
     const criteria = await JudgingCriterion.find({ roundId }).sort({ orderIndex: 1 });
 
     const totalMaxScore = criteria.reduce((sum, c) => sum + (c.maxScore || 0), 0);
 
+    // Determine expected judge count for this round
+    // "expected" = judges who have an assignment (or all judges if evaluationMode = 'all')
+    const assignments = await JudgeAssignment.find({ roundId });
+    const assignedJudgeIds = new Set(assignments.map((a) => a.judgeId.toString()));
+    const expectedJudgeCount =
+      round.evaluationMode === "all" ? judges.length : assignedJudgeIds.size;
+
     // Calculate score per team
     const teamResults = teams.map((team) => {
       const tId = team._id.toString();
-      const teamEvals = evaluations.filter((e) => e.teamId.toString() === tId);
+      const teamSubmittedEvals = submittedEvaluations.filter(
+        (e) => e.teamId.toString() === tId
+      );
 
-      const judgeScores: Record<string, { totalScore: number; weight: number }> = {};
+      const submittedCount = teamSubmittedEvals.length;
+      const isComplete = expectedJudgeCount > 0 && submittedCount >= expectedJudgeCount;
+
+      const judgeScores: Record<string, { totalScore: number; weight: number; tieBreakPriority: number }> = {};
       let weightedSum = 0;
       let totalWeight = 0;
 
-      for (const ev of teamEvals) {
+      for (const ev of teamSubmittedEvals) {
         const jId = ev.judgeId.toString();
         const judge = judges.find((j) => j._id.toString() === jId);
-        const weight = judge ? judge.weight : 1.0;
+        const weight = judge ? (judge.weight || 1.0) : 1.0;
+        const tbp = judge ? (judge.tieBreakPriority || 999) : 999;
 
         judgeScores[jId] = {
           totalScore: ev.totalScore,
           weight,
+          tieBreakPriority: tbp,
         };
 
         weightedSum += ev.totalScore * weight;
         totalWeight += weight;
       }
 
-      const finalWeightedScore = totalWeight > 0
+      const finalWeightedScore: number | null = isComplete && totalWeight > 0
         ? Math.round((weightedSum / totalWeight) * 100) / 100
         : null;
 
@@ -870,39 +886,45 @@ export const getJudgingResults = async (req: Request, res: Response): Promise<vo
         teamName: team.teamName,
         projectName: team.projectName,
         members: team.members,
-        evaluationsCount: teamEvals.length,
+        evaluationsCount: submittedCount,
+        expectedJudgesCount: expectedJudgeCount,
+        isComplete,
+        status: isComplete ? "COMPLETE" : "PENDING",
         judgeScores,
         finalWeightedScore,
+        rank: null as number | null,
       };
     });
 
-    // Rank sorting with Tie-Break Priority
-    teamResults.sort((a, b) => {
-      const scoreA = a.finalWeightedScore !== null ? a.finalWeightedScore : -1;
-      const scoreB = b.finalWeightedScore !== null ? b.finalWeightedScore : -1;
+    // Only COMPLETE teams get ranked; sort them by weighted score then tie-break
+    const completeTeams = teamResults.filter((t) => t.isComplete);
+    const pendingTeams = teamResults.filter((t) => !t.isComplete);
 
-      if (scoreB !== scoreA) {
-        return scoreB - scoreA;
-      }
+    completeTeams.sort((a, b) => {
+      const scoreA = a.finalWeightedScore ?? -1;
+      const scoreB = b.finalWeightedScore ?? -1;
 
-      // Tie breaker: compare scores from judges in order of tieBreakPriority (1, 2, 3...)
+      if (scoreB !== scoreA) return scoreB - scoreA;
+
+      // Tie-break: compare judge scores in tieBreakPriority order (1 = highest)
+      // judges array is already sorted by tieBreakPriority ASC
       for (const judge of judges) {
         const jId = judge._id.toString();
-        const scoreJudgeA = a.judgeScores[jId]?.totalScore ?? -1;
-        const scoreJudgeB = b.judgeScores[jId]?.totalScore ?? -1;
-
-        if (scoreJudgeB !== scoreJudgeA) {
-          return scoreJudgeB - scoreJudgeA;
-        }
+        const scoreA2 = a.judgeScores[jId]?.totalScore ?? -1;
+        const scoreB2 = b.judgeScores[jId]?.totalScore ?? -1;
+        if (scoreB2 !== scoreA2) return scoreB2 - scoreA2;
       }
 
       return a.teamCode.localeCompare(b.teamCode);
     });
 
-    const rankedTeams = teamResults.map((t, index) => ({
-      ...t,
-      rank: t.finalWeightedScore !== null ? index + 1 : "-",
-    }));
+    // Assign ranks only to complete teams
+    completeTeams.forEach((t, idx) => {
+      t.rank = idx + 1;
+    });
+
+    // Merge: complete (ranked) first, then pending
+    const rankedTeams = [...completeTeams, ...pendingTeams];
 
     res.json({
       round: {
@@ -910,6 +932,7 @@ export const getJudgingResults = async (req: Request, res: Response): Promise<vo
         name: round.name,
         isLocked: round.isLocked,
         totalMaxScore,
+        expectedJudgesCount: expectedJudgeCount,
       },
       judges: judges.map((j) => ({
         id: j._id,

@@ -322,6 +322,7 @@ export const memoryParticipants = new MemoryCollection<any>();
 export const memoryPollResponses = new MemoryCollection<any>();
 export const memoryWordCloudResponses = new MemoryCollection<any>();
 export const memoryQuizResponses = new MemoryCollection<any>();
+export const memoryQuizSlots = new MemoryCollection<any>();
 export const memoryUsers = new MemoryCollection<any>();
 
 // Judging In-Memory Stores

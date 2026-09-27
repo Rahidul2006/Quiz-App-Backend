@@ -2,29 +2,102 @@ import { Request, Response } from "express";
 import { Activity } from "../models/Activity";
 import { QuizResponse } from "../models/QuizResponse";
 import { Participant } from "../models/Participant";
+import { Event } from "../models/Event";
 import { emitToEventRoom } from "../sockets/socketHandler";
+import { calculateQuizScore, buildLeaderboard } from "../services/quizScoringService";
 
+// ─── Internal quiz finalization helper ───────────────────────────────────────
+// Used by: manual finishQuiz, auto-expiry ticker, manual stopActivity (quiz)
+export async function finalizeQuiz(activity: any): Promise<any[]> {
+  const now = new Date();
+  activity.status = "ENDED";
+  activity.stoppedAt = now;
+  activity.settings = { ...activity.settings, quiz_state: "leaderboard" };
+  await activity.save();
+
+  await Event.findByIdAndUpdate(activity.eventId, { activeActivityId: null });
+
+  const leaderboard = await buildLeaderboard(
+    activity._id.toString(),
+    activity.eventId.toString()
+  );
+
+  emitToEventRoom(activity.eventId.toString(), "quiz:finished", {
+    activityId: activity._id,
+    leaderboard,
+  });
+
+  emitToEventRoom(activity.eventId.toString(), "quiz:leaderboard_updated", {
+    activityId: activity._id,
+    leaderboard,
+  });
+
+  emitToEventRoom(activity.eventId.toString(), "activity:closed", {
+    activityId: activity._id.toString(),
+    status: "ENDED",
+    stoppedAt: now,
+    reason: "quiz_finalized",
+    serverTime: now,
+  });
+
+  return leaderboard;
+}
+
+// ─── POST /quizzes/:id/answer ─────────────────────────────────────────────────
 export const answerQuizQuestion = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.params; // activity id
-    const { questionId, optionId, participantId, participantName, timeTakenMs } = req.body;
+    const { id } = req.params;
+    // Client-provided timeTakenMs is intentionally IGNORED — server calculates it
+    const { questionId, optionId, participantId, participantName } = req.body;
 
     if (!questionId || !optionId || !participantId) {
       res.status(400).json({ message: "questionId, optionId, and participantId are required" });
       return;
     }
 
+    // 1. Activity exists
     const activity = await Activity.findById(id);
-    if (!activity || activity.type !== "quiz") {
+    if (!activity) {
       res.status(404).json({ message: "Quiz activity not found" });
       return;
     }
 
-    if (activity.status === "PAUSED" || activity.status === "paused") {
-      res.status(400).json({ message: "Quiz activity is currently paused by organizer" });
+    // 2. Activity type = quiz
+    if (activity.type !== "quiz") {
+      res.status(404).json({ message: "Activity is not a quiz" });
       return;
     }
 
+    // 3. Activity status = LIVE
+    const isLive =
+      activity.status === "LIVE" ||
+      activity.status === "live" ||
+      activity.status === "active";
+    if (!isLive) {
+      if (
+        activity.status === "ENDED" ||
+        activity.status === "ended"
+      ) {
+        res.status(409).json({ message: "Quiz has ended." });
+      } else if (
+        activity.status === "PAUSED" ||
+        activity.status === "paused"
+      ) {
+        res.status(400).json({ message: "Quiz activity is currently paused by organizer" });
+      } else {
+        res.status(400).json({ message: "Quiz activity is not currently active" });
+      }
+      return;
+    }
+
+    // 4. Quiz state = answering (not leaderboard)
+    const quizState = activity.settings?.quiz_state;
+    if (quizState === "leaderboard") {
+      res.status(409).json({ message: "Quiz has ended." });
+      return;
+    }
+
+    // 5. Question exists
     const question = (activity.questions || []).find(
       (q: any) => q._id?.toString() === questionId || q.id === questionId
     );
@@ -33,25 +106,78 @@ export const answerQuizQuestion = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    // SERVER-SIDE SCORING: Verify correct answer securely
+    // 6. Submitted questionId matches currently active question
+    const activeIdx = activity.activeQuestionIndex ?? 0;
+    const activeQuestion = (activity.questions || [])[activeIdx];
+    const activeQId = activeQuestion?._id?.toString() || activeQuestion?.id;
+    if (!activeQuestion || activeQId !== questionId) {
+      res.status(409).json({ message: "This question is no longer active." });
+      return;
+    }
+
+    const now = new Date();
+
+    // 7. Server time has not passed the question deadline
+    if (activity.quizQuestionEndsAt) {
+      const questionDeadline = new Date(activity.quizQuestionEndsAt);
+      if (now > questionDeadline) {
+        res.status(409).json({ message: "Question time has expired." });
+        return;
+      }
+    }
+
+    // 8. Server time has not passed the activity endsAt
+    if (activity.endsAt) {
+      const activityDeadline = new Date(activity.endsAt);
+      if (now > activityDeadline) {
+        res.status(409).json({ message: "Quiz has ended." });
+        return;
+      }
+    }
+
+    // 9. Participant belongs to the Event (best-effort check)
+    const allParticipants = await Participant.find({ eventId: activity.eventId });
+    const participantBelongs = allParticipants.some(
+      (p) =>
+        p._id.toString() === participantId ||
+        (p as any).id === participantId ||
+        (p as any).sessionToken === participantId
+    );
+    if (!participantBelongs) {
+      // Warn but allow — in-memory stores may not populate correctly
+      console.warn(`[Quiz] Participant ${participantId} not found in event ${activity.eventId} — allowing submission`);
+    }
+
+    // 10. Participant has not already submitted this question
+    const existingResponse = await QuizResponse.findOne({ questionId, participantId });
+    if (existingResponse) {
+      res.status(409).json({ message: "You have already answered this question." });
+      return;
+    }
+
+    // ── Server-side timing (authoritative) ──
+    const submissionTime = now;
+    const questionStartedAt = activity.quizQuestionStartedAt
+      ? new Date(activity.quizQuestionStartedAt)
+      : submissionTime;
+    const timeTakenMs = Math.max(0, submissionTime.getTime() - questionStartedAt.getTime());
+
+    // ── Server-side scoring (never trust client isCorrect or timeTakenMs) ──
     const selectedOpt = (question.options || []).find(
       (o: any) => o._id?.toString() === optionId || o.id === optionId
     );
     const isCorrect = Boolean(selectedOpt?.is_correct);
 
     let scoreAwarded = 0;
-    const timeMs = Number(timeTakenMs) || 0;
     if (isCorrect) {
-      const basePoints = question.points || 1000;
-      const totalTimeMs = (question.time_limit_sec || 15) * 1000;
-      const remainingTime = Math.max(0, totalTimeMs - timeMs);
-      const speedBonus = Math.round((remainingTime / totalTimeMs) * 300);
-      scoreAwarded = basePoints + speedBonus;
+      scoreAwarded = calculateQuizScore(
+        question.points || 1000,
+        question.time_limit_sec || 15,
+        timeTakenMs
+      );
     }
 
-    // Duplicate answer protection
-    await QuizResponse.deleteMany({ questionId, participantId });
-
+    // ── Save response ──
     const response = await QuizResponse.create({
       activityId: activity._id,
       questionId,
@@ -59,14 +185,17 @@ export const answerQuizQuestion = async (req: Request, res: Response): Promise<v
       participantId,
       participantName: participantName || "Participant",
       isCorrect,
-      timeTakenMs: timeMs,
+      timeTakenMs,
       scoreAwarded,
     });
 
-    // Calculate updated live leaderboard
-    const leaderboard = await calculateLeaderboard(activity._id.toString(), activity.eventId.toString());
+    // ── Build updated live leaderboard ──
+    const leaderboard = await buildLeaderboard(
+      activity._id.toString(),
+      activity.eventId.toString()
+    );
 
-    // Socket.IO Emit: quiz:answer_submitted and quiz:leaderboard_updated
+    // ── Emit realtime events ──
     emitToEventRoom(activity.eventId.toString(), "quiz:answer_submitted", {
       activityId: activity._id,
       questionId,
@@ -81,14 +210,21 @@ export const answerQuizQuestion = async (req: Request, res: Response): Promise<v
     res.json({
       success: true,
       isCorrect,
+      timeTakenMs,
       scoreAwarded,
       responseId: response._id,
     });
   } catch (error: any) {
+    // Duplicate key error = already answered (unique index safety net)
+    if (error.code === 11000) {
+      res.status(409).json({ message: "You have already answered this question." });
+      return;
+    }
     res.status(500).json({ message: error.message });
   }
 };
 
+// ─── POST /quizzes/:id/advance ────────────────────────────────────────────────
 export const advanceQuizQuestion = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
@@ -100,26 +236,113 @@ export const advanceQuizQuestion = async (req: Request, res: Response): Promise<
       return;
     }
 
-    activity.activeQuestionIndex = Number(questionIndex);
+    const newIndex = Number(questionIndex);
+    const question = (activity.questions || [])[newIndex];
+
+    // Set server-authoritative question timestamps
+    const questionStartedAt = new Date();
+    const timeLimitSec = question?.time_limit_sec || 15;
+    const questionEndsAt = new Date(questionStartedAt.getTime() + timeLimitSec * 1000);
+
+    activity.activeQuestionIndex = newIndex;
     activity.settings = { ...activity.settings, quiz_state: "answering" };
+    activity.quizQuestionStartedAt = questionStartedAt;
+    activity.quizQuestionEndsAt = questionEndsAt;
     await activity.save();
 
-    // Socket.IO Emit: quiz:question_changed
+    // Emit with authoritative server timestamps
     emitToEventRoom(activity.eventId.toString(), "quiz:question_changed", {
       activityId: activity._id,
-      questionIndex: activity.activeQuestionIndex,
-      question: activity.questions?.[activity.activeQuestionIndex],
+      questionIndex: newIndex,
+      question,
+      questionStartedAt,
+      questionEndsAt,
+      serverTime: questionStartedAt,
     });
 
     res.json({
       success: true,
-      activeQuestionIndex: activity.activeQuestionIndex,
+      activeQuestionIndex: newIndex,
+      questionStartedAt,
+      questionEndsAt,
     });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
 };
 
+// ─── POST /quizzes/:id/reveal ─────────────────────────────────────────────────
+export const revealQuizAnswer = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const activity = await Activity.findById(id);
+    if (!activity || activity.type !== "quiz") {
+      res.status(404).json({ message: "Quiz activity not found" });
+      return;
+    }
+
+    const activeIdx = activity.activeQuestionIndex ?? 0;
+    const question = (activity.questions || [])[activeIdx];
+    if (!question) {
+      res.status(404).json({ message: "Active quiz question not found" });
+      return;
+    }
+
+    const correctOption = (question.options || []).find((o: any) => o.is_correct);
+    const correctOptionId = correctOption?._id?.toString() || (correctOption as any)?.id || "";
+
+    activity.settings = { ...activity.settings, quiz_state: "revealed" };
+    await activity.save();
+
+    const leaderboard = await buildLeaderboard(
+      activity._id.toString(),
+      activity.eventId.toString()
+    );
+
+    const questionId = question._id?.toString() || (question as any).id;
+    const responses = await QuizResponse.find({
+      activityId: activity._id,
+      questionId,
+    });
+
+    const optionCounts: Record<string, number> = {};
+    responses.forEach((r) => {
+      optionCounts[r.optionId] = (optionCounts[r.optionId] || 0) + 1;
+    });
+
+    emitToEventRoom(activity.eventId.toString(), "quiz:answer_revealed", {
+      activityId: activity._id,
+      questionIndex: activeIdx,
+      questionId,
+      correctOptionId,
+      explanation: question.explanation || "",
+      leaderboard,
+      optionCounts,
+      totalResponses: responses.length,
+    });
+
+    emitToEventRoom(activity.eventId.toString(), "quiz:leaderboard_updated", {
+      activityId: activity._id,
+      leaderboard,
+    });
+
+    res.json({
+      success: true,
+      quiz_state: "revealed",
+      questionIndex: activeIdx,
+      questionId,
+      correctOptionId,
+      explanation: question.explanation || "",
+      leaderboard,
+      optionCounts,
+      totalResponses: responses.length,
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ─── POST /quizzes/:id/finish ─────────────────────────────────────────────────
 export const finishQuiz = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
@@ -129,23 +352,14 @@ export const finishQuiz = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    activity.settings = { ...activity.settings, quiz_state: "leaderboard" };
-    await activity.save();
-
-    const leaderboard = await calculateLeaderboard(activity._id.toString(), activity.eventId.toString());
-
-    // Socket.IO Emit: quiz:finished
-    emitToEventRoom(activity.eventId.toString(), "quiz:finished", {
-      activityId: activity._id,
-      leaderboard,
-    });
-
+    const leaderboard = await finalizeQuiz(activity);
     res.json({ success: true, leaderboard });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
 };
 
+// ─── GET /quizzes/:id/leaderboard ────────────────────────────────────────────
 export const getLeaderboard = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
@@ -155,68 +369,12 @@ export const getLeaderboard = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const leaderboard = await calculateLeaderboard(activity._id.toString(), activity.eventId.toString());
+    const leaderboard = await buildLeaderboard(
+      activity._id.toString(),
+      activity.eventId.toString()
+    );
     res.json(leaderboard);
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
 };
-
-async function calculateLeaderboard(activityId: string, eventId: string) {
-  const activity = await Activity.findById(activityId);
-  const totalQuestions = activity?.questions?.length || 0;
-
-  const responses = await QuizResponse.find({ activityId });
-  const participants = await Participant.find({ eventId });
-
-  const map = new Map<
-    string,
-    { name: string; score: number; correct: number; totalTimeMs: number }
-  >();
-
-  participants.forEach((p) => {
-    map.set(p._id.toString(), {
-      name: p.name,
-      score: 0,
-      correct: 0,
-      totalTimeMs: 0,
-    });
-  });
-
-  responses.forEach((r) => {
-    const current = map.get(r.participantId) || {
-      name: r.participantName,
-      score: 0,
-      correct: 0,
-      totalTimeMs: 0,
-    };
-    current.score += r.scoreAwarded;
-    if (r.isCorrect) current.correct += 1;
-    current.totalTimeMs += r.timeTakenMs;
-    map.set(r.participantId, current);
-  });
-
-  const entries: any[] = [];
-  map.forEach((data, id) => {
-    entries.push({
-      participant_id: id,
-      participant_name: data.name,
-      total_score: data.score,
-      correct_answers: data.correct,
-      total_questions: totalQuestions,
-      total_time_ms: data.totalTimeMs,
-      rank: 0,
-    });
-  });
-
-  // Sort by highest score, then fastest total time
-  entries.sort((a, b) => {
-    if (b.total_score !== a.total_score) return b.total_score - a.total_score;
-    return a.total_time_ms - b.total_time_ms;
-  });
-
-  return entries.map((entry, index) => ({
-    ...entry,
-    rank: index + 1,
-  }));
-}

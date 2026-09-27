@@ -46,6 +46,16 @@ export interface ActivitySettings {
   allow_user_options?: boolean;
   timer_seconds?: number;
   quiz_state?: 'answering' | 'revealed' | 'leaderboard';
+  // Quiz slot-based participation (optional)
+  quiz_slots?: string[];   // e.g. ["Team A", "Team B", "Slot 1"]
+  require_slot_selection?: boolean;  // If true, participant must pick a slot to join
+}
+
+export interface IQuizSlotInfo {
+  slotLabel: string;
+  participantId: string | null;
+  participantName: string | null;
+  isClaimed: boolean;
 }
 
 export interface IPollOption {
