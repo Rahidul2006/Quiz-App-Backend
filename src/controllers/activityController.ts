@@ -120,7 +120,8 @@ export const launchActivity = async (req: Request, res: Response): Promise<void>
 
     const durationSeconds = Math.max(5, Number(activity.duration) || 30);
     const startedAt = new Date();
-    const endsAt = new Date(startedAt.getTime() + durationSeconds * 1000);
+    // For quizzes, duration is host/question controlled so the overall activity doesn't abruptly end after 30s
+    const endsAt = activity.type === "quiz" ? null : new Date(startedAt.getTime() + durationSeconds * 1000);
 
     activity.status = "LIVE";
     activity.duration = durationSeconds;
@@ -130,14 +131,10 @@ export const launchActivity = async (req: Request, res: Response): Promise<void>
 
     if (activity.type === "quiz") {
       activity.activeQuestionIndex = 0;
-      activity.settings = { ...activity.settings, quiz_state: "answering" };
-      // Set server-authoritative question timer for question 0
-      const firstQuestion = (activity.questions || [])[0];
-      const qStartedAt = startedAt;
-      const qTimeLimitSec = firstQuestion?.time_limit_sec || 15;
-      const qEndsAt = new Date(qStartedAt.getTime() + qTimeLimitSec * 1000);
-      activity.quizQuestionStartedAt = qStartedAt;
-      activity.quizQuestionEndsAt = qEndsAt;
+      // Quiz starts in "ready" state - host has full control to start timer for Question 1
+      activity.settings = { ...activity.settings, quiz_state: "ready", quizQuestionRemainingSeconds: null };
+      activity.quizQuestionStartedAt = null;
+      activity.quizQuestionEndsAt = null;
     }
     await activity.save();
 
@@ -151,16 +148,17 @@ export const launchActivity = async (req: Request, res: Response): Promise<void>
       serverTime: new Date(),
     });
 
-    // For quiz: also emit quiz:question_changed with server timestamps
+    // For quiz: also emit quiz:question_changed in "ready" state (timer not yet started)
     if (activity.type === "quiz") {
       const firstQ = (activity.questions || [])[0];
       emitToEventRoom(activity.eventId.toString(), "quiz:question_changed", {
         activityId: activity._id,
         questionIndex: 0,
         question: firstQ,
-        questionStartedAt: activity.quizQuestionStartedAt,
-        questionEndsAt: activity.quizQuestionEndsAt,
-        serverTime: activity.quizQuestionStartedAt,
+        quizState: "ready",
+        questionStartedAt: null,
+        questionEndsAt: null,
+        serverTime: new Date(),
       });
 
       // Emit initial empty slot state if slots are configured
@@ -334,7 +332,7 @@ export const restartActivity = async (req: Request, res: Response): Promise<void
 
     const durationSeconds = Math.max(5, Number(activity.duration) || 30);
     const startedAt = new Date();
-    const endsAt = new Date(startedAt.getTime() + durationSeconds * 1000);
+    const endsAt = activity.type === "quiz" ? null : new Date(startedAt.getTime() + durationSeconds * 1000);
 
     activity.status = "LIVE";
     activity.duration = durationSeconds;
@@ -346,7 +344,9 @@ export const restartActivity = async (req: Request, res: Response): Promise<void
 
     if (activity.type === "quiz") {
       activity.activeQuestionIndex = 0;
-      activity.settings = { ...activity.settings, quiz_state: "answering" };
+      activity.settings = { ...activity.settings, quiz_state: "ready", quizQuestionRemainingSeconds: null };
+      activity.quizQuestionStartedAt = null;
+      activity.quizQuestionEndsAt = null;
     }
     await activity.save();
 
