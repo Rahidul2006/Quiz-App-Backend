@@ -8,6 +8,13 @@ const router = (0, express_1.Router)();
 router.post("/:id/answer", quizController_1.answerQuizQuestion);
 router.post("/:id/reveal", authMiddleware_1.requireAdmin, quizController_1.revealQuizAnswer);
 router.post("/:id/advance", authMiddleware_1.requireAdmin, quizController_1.advanceQuizQuestion);
+router.post("/:id/switch-question", authMiddleware_1.requireAdmin, quizController_1.switchQuizQuestion);
+router.post("/:id/start-timer", authMiddleware_1.requireAdmin, quizController_1.startQuizTimer);
+router.post("/:id/pause-timer", authMiddleware_1.requireAdmin, quizController_1.pauseQuizTimer);
+router.post("/:id/resume-timer", authMiddleware_1.requireAdmin, quizController_1.resumeQuizTimer);
+router.post("/:id/reset-timer", authMiddleware_1.requireAdmin, quizController_1.resetQuizTimer);
+router.post("/:id/add-time", authMiddleware_1.requireAdmin, quizController_1.addQuizTime);
+router.post("/:id/show-leaderboard", authMiddleware_1.requireAdmin, quizController_1.showQuizLeaderboard);
 router.post("/:id/finish", authMiddleware_1.requireAdmin, quizController_1.finishQuiz);
 router.get("/:id/leaderboard", quizController_1.getLeaderboard);
 // Quiz slot routes

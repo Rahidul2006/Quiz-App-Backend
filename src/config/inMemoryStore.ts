@@ -50,19 +50,23 @@ export const wrapDoc = <T extends Record<string, any>>(doc: T, collection: T[]):
       return idStr;
     },
     toObject() {
-      const copy: any = { ...doc };
+      const copy: any = { ...this };
       copy.id = idStr;
       copy._id = idStr;
       delete copy.save;
       delete copy.select;
+      delete copy.toObject;
+      delete copy.toJSON;
       return copy;
     },
     toJSON() {
-      const copy: any = { ...doc };
+      const copy: any = { ...this };
       copy.id = idStr;
       copy._id = idStr;
       delete copy.save;
       delete copy.select;
+      delete copy.toObject;
+      delete copy.toJSON;
       return copy;
     },
     async save() {
@@ -70,10 +74,15 @@ export const wrapDoc = <T extends Record<string, any>>(doc: T, collection: T[]):
         (item: any) =>
           (item._id && item._id.toString() === idStr) || (item.id && item.id.toString() === idStr)
       );
+      const clean: any = { ...this };
+      delete clean.save;
+      delete clean.select;
+      delete clean.toObject;
+      delete clean.toJSON;
       if (idx >= 0) {
-        collection[idx] = { ...this };
+        collection[idx] = clean;
       } else {
-        collection.push({ ...this });
+        collection.push(clean);
       }
       return this;
     },

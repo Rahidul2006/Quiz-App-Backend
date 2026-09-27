@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getLeaderboard = exports.finishQuiz = exports.revealQuizAnswer = exports.advanceQuizQuestion = exports.answerQuizQuestion = void 0;
+exports.getLeaderboard = exports.finishQuiz = exports.revealQuizAnswer = exports.showQuizLeaderboard = exports.addQuizTime = exports.resetQuizTimer = exports.resumeQuizTimer = exports.pauseQuizTimer = exports.startQuizTimer = exports.advanceQuizQuestion = exports.switchQuizQuestion = exports.answerQuizQuestion = void 0;
 exports.finalizeQuiz = finalizeQuiz;
 const Activity_1 = require("../models/Activity");
 const QuizResponse_1 = require("../models/QuizResponse");
@@ -94,6 +94,20 @@ const answerQuizQuestion = async (req, res) => {
             res.status(409).json({ message: "This question is no longer active." });
             return;
         }
+        // 6.5. Question timer must be actively running (not in ready, paused, or revealed state)
+        const currentQuizState = activity.settings?.quiz_state;
+        if (currentQuizState === "ready" || !activity.quizQuestionStartedAt || !activity.quizQuestionEndsAt) {
+            res.status(400).json({ message: "The host has not started the timer for this question yet." });
+            return;
+        }
+        if (currentQuizState === "paused") {
+            res.status(400).json({ message: "Question timer is currently paused by the organizer." });
+            return;
+        }
+        if (currentQuizState === "revealed") {
+            res.status(409).json({ message: "The answer has already been revealed for this question." });
+            return;
+        }
         const now = new Date();
         // 7. Server time has not passed the question deadline
         if (activity.quizQuestionEndsAt) {
@@ -103,7 +117,7 @@ const answerQuizQuestion = async (req, res) => {
                 return;
             }
         }
-        // 8. Server time has not passed the activity endsAt
+        // 8. Server time has not passed the activity endsAt (if explicitly set)
         if (activity.endsAt) {
             const activityDeadline = new Date(activity.endsAt);
             if (now > activityDeadline) {
@@ -180,39 +194,49 @@ const answerQuizQuestion = async (req, res) => {
     }
 };
 exports.answerQuizQuestion = answerQuizQuestion;
-// ─── POST /quizzes/:id/advance ────────────────────────────────────────────────
-const advanceQuizQuestion = async (req, res) => {
+// ─── POST /quizzes/:id/switch-question & /quizzes/:id/advance ─────────────────
+const switchQuizQuestion = async (req, res) => {
     try {
         const { id } = req.params;
-        const { questionIndex } = req.body;
+        const { questionIndex, autoStartTimer } = req.body;
         const activity = await Activity_1.Activity.findById(id);
         if (!activity || activity.type !== "quiz") {
             res.status(404).json({ message: "Quiz activity not found" });
             return;
         }
-        const newIndex = Number(questionIndex);
+        const totalQuestions = (activity.questions || []).length;
+        const requestedIndex = Number(questionIndex);
+        const newIndex = Math.max(0, Math.min(isNaN(requestedIndex) ? 0 : requestedIndex, Math.max(0, totalQuestions - 1)));
         const question = (activity.questions || [])[newIndex];
-        // Set server-authoritative question timestamps
-        const questionStartedAt = new Date();
-        const timeLimitSec = question?.time_limit_sec || 15;
-        const questionEndsAt = new Date(questionStartedAt.getTime() + timeLimitSec * 1000);
+        let questionStartedAt = null;
+        let questionEndsAt = null;
+        let quizState = "ready";
+        if (autoStartTimer) {
+            questionStartedAt = new Date();
+            const timeLimitSec = question?.time_limit_sec || 15;
+            questionEndsAt = new Date(questionStartedAt.getTime() + timeLimitSec * 1000);
+            quizState = "answering";
+        }
         activity.activeQuestionIndex = newIndex;
-        activity.settings = { ...activity.settings, quiz_state: "answering" };
+        activity.settings = { ...activity.settings, quiz_state: quizState, quizQuestionRemainingSeconds: null };
         activity.quizQuestionStartedAt = questionStartedAt;
         activity.quizQuestionEndsAt = questionEndsAt;
         await activity.save();
-        // Emit with authoritative server timestamps
-        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:question_changed", {
+        const payload = {
             activityId: activity._id,
             questionIndex: newIndex,
             question,
+            quizState,
             questionStartedAt,
             questionEndsAt,
-            serverTime: questionStartedAt,
-        });
+            serverTime: new Date(),
+        };
+        // Emit with authoritative server timestamps
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:question_changed", payload);
         res.json({
             success: true,
             activeQuestionIndex: newIndex,
+            quizState,
             questionStartedAt,
             questionEndsAt,
         });
@@ -221,7 +245,217 @@ const advanceQuizQuestion = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
-exports.advanceQuizQuestion = advanceQuizQuestion;
+exports.switchQuizQuestion = switchQuizQuestion;
+exports.advanceQuizQuestion = exports.switchQuizQuestion;
+// ─── POST /quizzes/:id/start-timer ───────────────────────────────────────────
+const startQuizTimer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { durationSeconds } = req.body;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity || activity.type !== "quiz") {
+            res.status(404).json({ message: "Quiz activity not found" });
+            return;
+        }
+        const activeIdx = activity.activeQuestionIndex ?? 0;
+        const question = (activity.questions || [])[activeIdx];
+        if (!question) {
+            res.status(404).json({ message: "Active quiz question not found" });
+            return;
+        }
+        const timeLimitSec = Math.max(5, Number(durationSeconds) || question?.time_limit_sec || 15);
+        const questionStartedAt = new Date();
+        const questionEndsAt = new Date(questionStartedAt.getTime() + timeLimitSec * 1000);
+        activity.settings = { ...activity.settings, quiz_state: "answering", quizQuestionRemainingSeconds: null };
+        activity.quizQuestionStartedAt = questionStartedAt;
+        activity.quizQuestionEndsAt = questionEndsAt;
+        await activity.save();
+        const payload = {
+            activityId: activity._id,
+            questionIndex: activeIdx,
+            question,
+            quizState: "answering",
+            questionStartedAt,
+            questionEndsAt,
+            durationSeconds: timeLimitSec,
+            serverTime: questionStartedAt,
+        };
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:timer_started", payload);
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:question_changed", payload);
+        res.json({
+            success: true,
+            ...payload,
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.startQuizTimer = startQuizTimer;
+// ─── POST /quizzes/:id/pause-timer ───────────────────────────────────────────
+const pauseQuizTimer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity || activity.type !== "quiz") {
+            res.status(404).json({ message: "Quiz activity not found" });
+            return;
+        }
+        const now = new Date();
+        let remaining = 15;
+        if (activity.quizQuestionEndsAt) {
+            remaining = Math.max(1, Math.ceil((new Date(activity.quizQuestionEndsAt).getTime() - now.getTime()) / 1000));
+        }
+        else {
+            const q = (activity.questions || [])[activity.activeQuestionIndex || 0];
+            remaining = q?.time_limit_sec || 15;
+        }
+        activity.settings = { ...activity.settings, quiz_state: "paused", quizQuestionRemainingSeconds: remaining };
+        activity.quizQuestionEndsAt = null;
+        await activity.save();
+        const payload = {
+            activityId: activity._id,
+            questionIndex: activity.activeQuestionIndex ?? 0,
+            quizState: "paused",
+            remainingSeconds: remaining,
+            serverTime: now,
+        };
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:timer_paused", payload);
+        res.json({ success: true, ...payload });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.pauseQuizTimer = pauseQuizTimer;
+// ─── POST /quizzes/:id/resume-timer ──────────────────────────────────────────
+const resumeQuizTimer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity || activity.type !== "quiz") {
+            res.status(404).json({ message: "Quiz activity not found" });
+            return;
+        }
+        const now = new Date();
+        const remaining = Number(activity.settings?.quizQuestionRemainingSeconds) || 10;
+        const questionStartedAt = new Date(now.getTime() - ((activity.questions?.[activity.activeQuestionIndex || 0]?.time_limit_sec || 15) - remaining) * 1000);
+        const questionEndsAt = new Date(now.getTime() + remaining * 1000);
+        activity.settings = { ...activity.settings, quiz_state: "answering", quizQuestionRemainingSeconds: null };
+        activity.quizQuestionStartedAt = questionStartedAt;
+        activity.quizQuestionEndsAt = questionEndsAt;
+        await activity.save();
+        const payload = {
+            activityId: activity._id,
+            questionIndex: activity.activeQuestionIndex ?? 0,
+            quizState: "answering",
+            questionStartedAt,
+            questionEndsAt,
+            remainingSeconds: remaining,
+            serverTime: now,
+        };
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:timer_resumed", payload);
+        res.json({ success: true, ...payload });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.resumeQuizTimer = resumeQuizTimer;
+// ─── POST /quizzes/:id/reset-timer ───────────────────────────────────────────
+const resetQuizTimer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity || activity.type !== "quiz") {
+            res.status(404).json({ message: "Quiz activity not found" });
+            return;
+        }
+        activity.settings = { ...activity.settings, quiz_state: "ready", quizQuestionRemainingSeconds: null };
+        activity.quizQuestionStartedAt = null;
+        activity.quizQuestionEndsAt = null;
+        await activity.save();
+        const payload = {
+            activityId: activity._id,
+            questionIndex: activity.activeQuestionIndex ?? 0,
+            quizState: "ready",
+            questionStartedAt: null,
+            questionEndsAt: null,
+            serverTime: new Date(),
+        };
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:timer_reset", payload);
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:question_changed", payload);
+        res.json({ success: true, ...payload });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.resetQuizTimer = resetQuizTimer;
+// ─── POST /quizzes/:id/add-time ──────────────────────────────────────────────
+const addQuizTime = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { extraSeconds = 10 } = req.body;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity || activity.type !== "quiz") {
+            res.status(404).json({ message: "Quiz activity not found" });
+            return;
+        }
+        const now = new Date();
+        let baseTime = activity.quizQuestionEndsAt ? new Date(activity.quizQuestionEndsAt) : now;
+        if (baseTime < now)
+            baseTime = now;
+        const newEndsAt = new Date(baseTime.getTime() + Math.max(1, Number(extraSeconds) || 10) * 1000);
+        activity.quizQuestionEndsAt = newEndsAt;
+        activity.settings = { ...activity.settings, quiz_state: "answering", quizQuestionRemainingSeconds: null };
+        if (!activity.quizQuestionStartedAt) {
+            activity.quizQuestionStartedAt = now;
+        }
+        await activity.save();
+        const payload = {
+            activityId: activity._id,
+            questionIndex: activity.activeQuestionIndex ?? 0,
+            quizState: "answering",
+            questionStartedAt: activity.quizQuestionStartedAt,
+            questionEndsAt: newEndsAt,
+            serverTime: now,
+        };
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:timer_updated", payload);
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:question_changed", payload);
+        res.json({ success: true, ...payload });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.addQuizTime = addQuizTime;
+// ─── POST /quizzes/:id/show-leaderboard ──────────────────────────────────────
+const showQuizLeaderboard = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity || activity.type !== "quiz") {
+            res.status(404).json({ message: "Quiz activity not found" });
+            return;
+        }
+        activity.settings = { ...activity.settings, quiz_state: "leaderboard" };
+        await activity.save();
+        const leaderboard = await (0, quizScoringService_1.buildLeaderboard)(activity._id.toString(), activity.eventId.toString());
+        const payload = {
+            activityId: activity._id,
+            leaderboard,
+            serverTime: new Date(),
+        };
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:leaderboard_shown", payload);
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:leaderboard_updated", payload);
+        res.json({ success: true, ...payload });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.showQuizLeaderboard = showQuizLeaderboard;
 // ─── POST /quizzes/:id/reveal ─────────────────────────────────────────────────
 const revealQuizAnswer = async (req, res) => {
     try {

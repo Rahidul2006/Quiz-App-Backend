@@ -52,28 +52,37 @@ const wrapDoc = (doc, collection) => {
             return idStr;
         },
         toObject() {
-            const copy = { ...doc };
+            const copy = { ...this };
             copy.id = idStr;
             copy._id = idStr;
             delete copy.save;
             delete copy.select;
+            delete copy.toObject;
+            delete copy.toJSON;
             return copy;
         },
         toJSON() {
-            const copy = { ...doc };
+            const copy = { ...this };
             copy.id = idStr;
             copy._id = idStr;
             delete copy.save;
             delete copy.select;
+            delete copy.toObject;
+            delete copy.toJSON;
             return copy;
         },
         async save() {
             const idx = collection.findIndex((item) => (item._id && item._id.toString() === idStr) || (item.id && item.id.toString() === idStr));
+            const clean = { ...this };
+            delete clean.save;
+            delete clean.select;
+            delete clean.toObject;
+            delete clean.toJSON;
             if (idx >= 0) {
-                collection[idx] = { ...this };
+                collection[idx] = clean;
             }
             else {
-                collection.push({ ...this });
+                collection.push(clean);
             }
             return this;
         },
