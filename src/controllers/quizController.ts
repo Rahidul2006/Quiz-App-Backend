@@ -271,6 +271,77 @@ export const advanceQuizQuestion = async (req: Request, res: Response): Promise<
   }
 };
 
+// ─── POST /quizzes/:id/reveal ─────────────────────────────────────────────────
+export const revealQuizAnswer = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const activity = await Activity.findById(id);
+    if (!activity || activity.type !== "quiz") {
+      res.status(404).json({ message: "Quiz activity not found" });
+      return;
+    }
+
+    const activeIdx = activity.activeQuestionIndex ?? 0;
+    const question = (activity.questions || [])[activeIdx];
+    if (!question) {
+      res.status(404).json({ message: "Active quiz question not found" });
+      return;
+    }
+
+    const correctOption = (question.options || []).find((o: any) => o.is_correct);
+    const correctOptionId = correctOption?._id?.toString() || (correctOption as any)?.id || "";
+
+    activity.settings = { ...activity.settings, quiz_state: "revealed" };
+    await activity.save();
+
+    const leaderboard = await buildLeaderboard(
+      activity._id.toString(),
+      activity.eventId.toString()
+    );
+
+    const questionId = question._id?.toString() || (question as any).id;
+    const responses = await QuizResponse.find({
+      activityId: activity._id,
+      questionId,
+    });
+
+    const optionCounts: Record<string, number> = {};
+    responses.forEach((r) => {
+      optionCounts[r.optionId] = (optionCounts[r.optionId] || 0) + 1;
+    });
+
+    emitToEventRoom(activity.eventId.toString(), "quiz:answer_revealed", {
+      activityId: activity._id,
+      questionIndex: activeIdx,
+      questionId,
+      correctOptionId,
+      explanation: question.explanation || "",
+      leaderboard,
+      optionCounts,
+      totalResponses: responses.length,
+    });
+
+    emitToEventRoom(activity.eventId.toString(), "quiz:leaderboard_updated", {
+      activityId: activity._id,
+      leaderboard,
+    });
+
+    res.json({
+      success: true,
+      quiz_state: "revealed",
+      questionIndex: activeIdx,
+      questionId,
+      correctOptionId,
+      explanation: question.explanation || "",
+      leaderboard,
+      optionCounts,
+      totalResponses: responses.length,
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // ─── POST /quizzes/:id/finish ─────────────────────────────────────────────────
 export const finishQuiz = async (req: Request, res: Response): Promise<void> => {
   try {

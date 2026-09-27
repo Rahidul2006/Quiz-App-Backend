@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getLeaderboard = exports.finishQuiz = exports.advanceQuizQuestion = exports.answerQuizQuestion = void 0;
+exports.getLeaderboard = exports.finishQuiz = exports.revealQuizAnswer = exports.advanceQuizQuestion = exports.answerQuizQuestion = void 0;
 exports.finalizeQuiz = finalizeQuiz;
 const Activity_1 = require("../models/Activity");
 const QuizResponse_1 = require("../models/QuizResponse");
@@ -222,6 +222,66 @@ const advanceQuizQuestion = async (req, res) => {
     }
 };
 exports.advanceQuizQuestion = advanceQuizQuestion;
+// ─── POST /quizzes/:id/reveal ─────────────────────────────────────────────────
+const revealQuizAnswer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const activity = await Activity_1.Activity.findById(id);
+        if (!activity || activity.type !== "quiz") {
+            res.status(404).json({ message: "Quiz activity not found" });
+            return;
+        }
+        const activeIdx = activity.activeQuestionIndex ?? 0;
+        const question = (activity.questions || [])[activeIdx];
+        if (!question) {
+            res.status(404).json({ message: "Active quiz question not found" });
+            return;
+        }
+        const correctOption = (question.options || []).find((o) => o.is_correct);
+        const correctOptionId = correctOption?._id?.toString() || correctOption?.id || "";
+        activity.settings = { ...activity.settings, quiz_state: "revealed" };
+        await activity.save();
+        const leaderboard = await (0, quizScoringService_1.buildLeaderboard)(activity._id.toString(), activity.eventId.toString());
+        const questionId = question._id?.toString() || question.id;
+        const responses = await QuizResponse_1.QuizResponse.find({
+            activityId: activity._id,
+            questionId,
+        });
+        const optionCounts = {};
+        responses.forEach((r) => {
+            optionCounts[r.optionId] = (optionCounts[r.optionId] || 0) + 1;
+        });
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:answer_revealed", {
+            activityId: activity._id,
+            questionIndex: activeIdx,
+            questionId,
+            correctOptionId,
+            explanation: question.explanation || "",
+            leaderboard,
+            optionCounts,
+            totalResponses: responses.length,
+        });
+        (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:leaderboard_updated", {
+            activityId: activity._id,
+            leaderboard,
+        });
+        res.json({
+            success: true,
+            quiz_state: "revealed",
+            questionIndex: activeIdx,
+            questionId,
+            correctOptionId,
+            explanation: question.explanation || "",
+            leaderboard,
+            optionCounts,
+            totalResponses: responses.length,
+        });
+    }
+    catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.revealQuizAnswer = revealQuizAnswer;
 // ─── POST /quizzes/:id/finish ─────────────────────────────────────────────────
 const finishQuiz = async (req, res) => {
     try {

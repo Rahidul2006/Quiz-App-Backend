@@ -672,42 +672,7 @@ export const getResults = async (req: Request, res: Response): Promise<void> => 
     if (activity.type === "quiz") {
       const responses = await QuizResponse.find({ activityId: activity._id });
       const totalQuestions = activity.questions?.length || 0;
-
-      const map = new Map<string, { name: string; score: number; correct: number; totalTimeMs: number }>();
-      responses.forEach((r) => {
-        const current = map.get(r.participantId) || {
-          name: r.participantName,
-          score: 0,
-          correct: 0,
-          totalTimeMs: 0,
-        };
-        current.score += r.scoreAwarded;
-        if (r.isCorrect) current.correct += 1;
-        current.totalTimeMs += r.timeTakenMs;
-        map.set(r.participantId, current);
-      });
-
-      const leaderboard: any[] = [];
-      map.forEach((data, pId) => {
-        leaderboard.push({
-          participant_id: pId,
-          participant_name: data.name,
-          total_score: data.score,
-          correct_answers: data.correct,
-          total_questions: totalQuestions,
-          total_time_ms: data.totalTimeMs,
-        });
-      });
-
-      leaderboard.sort((a, b) => {
-        if (b.total_score !== a.total_score) return b.total_score - a.total_score;
-        return a.total_time_ms - b.total_time_ms;
-      });
-
-      const rankedLeaderboard = leaderboard.map((item, idx) => ({
-        ...item,
-        rank: idx + 1,
-      }));
+      const rankedLeaderboard = await buildLeaderboard(activity._id.toString(), activity.eventId.toString());
 
       res.json({
         type: "quiz",

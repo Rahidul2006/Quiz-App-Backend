@@ -6,8 +6,10 @@ const Event_1 = require("../models/Event");
 const PollResponse_1 = require("../models/PollResponse");
 const WordCloudResponse_1 = require("../models/WordCloudResponse");
 const QuizResponse_1 = require("../models/QuizResponse");
+const QuizSlot_1 = require("../models/QuizSlot");
 const socketHandler_1 = require("../sockets/socketHandler");
 const quizController_1 = require("./quizController");
+const quizScoringService_1 = require("../services/quizScoringService");
 const normalizeWord = (w) => {
     return w.trim().toLowerCase().replace(/[^\w\s]/gi, "");
 };
@@ -92,6 +94,7 @@ const deleteActivity = async (req, res) => {
             await PollResponse_1.PollResponse.deleteMany({ activityId: id });
             await WordCloudResponse_1.WordCloudResponse.deleteMany({ activityId: id });
             await QuizResponse_1.QuizResponse.deleteMany({ activityId: id });
+            await QuizSlot_1.QuizSlot.deleteMany({ activityId: id });
             await Activity_1.Activity.findByIdAndDelete(id);
         }
         res.json({ message: "Activity deleted successfully" });
@@ -149,6 +152,20 @@ const launchActivity = async (req, res) => {
                 questionEndsAt: activity.quizQuestionEndsAt,
                 serverTime: activity.quizQuestionStartedAt,
             });
+            // Emit initial empty slot state if slots are configured
+            const definedSlots = activity.settings?.quiz_slots || [];
+            if (definedSlots.length > 0 && activity.settings?.require_slot_selection) {
+                const emptySlots = definedSlots.map((label) => ({
+                    slotLabel: label,
+                    isClaimed: false,
+                    participantId: null,
+                    participantName: null,
+                }));
+                (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:slots_updated", {
+                    activityId: activity._id.toString(),
+                    slots: emptySlots,
+                });
+            }
         }
         res.json({
             activity: activityPayload,
@@ -282,6 +299,7 @@ const restartActivity = async (req, res) => {
         await PollResponse_1.PollResponse.deleteMany({ activityId: actIdStr });
         await WordCloudResponse_1.WordCloudResponse.deleteMany({ activityId: actIdStr });
         await QuizResponse_1.QuizResponse.deleteMany({ activityId: actIdStr });
+        await QuizSlot_1.QuizSlot.deleteMany({ activityId: actIdStr });
         const durationSeconds = Math.max(5, Number(activity.duration) || 30);
         const startedAt = new Date();
         const endsAt = new Date(startedAt.getTime() + durationSeconds * 1000);
@@ -324,6 +342,20 @@ const restartActivity = async (req, res) => {
                 activityId: activity._id.toString(),
                 leaderboard: [],
             });
+            // Reset slot claims on restart
+            const definedSlots = activity.settings?.quiz_slots || [];
+            if (definedSlots.length > 0) {
+                const emptySlots = definedSlots.map((label) => ({
+                    slotLabel: label,
+                    isClaimed: false,
+                    participantId: null,
+                    participantName: null,
+                }));
+                (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:slots_updated", {
+                    activityId: activity._id.toString(),
+                    slots: emptySlots,
+                });
+            }
         }
         const payload = {
             activity: { ...activity.toObject(), id: activity._id },
@@ -576,40 +608,7 @@ const getResults = async (req, res) => {
         if (activity.type === "quiz") {
             const responses = await QuizResponse_1.QuizResponse.find({ activityId: activity._id });
             const totalQuestions = activity.questions?.length || 0;
-            const map = new Map();
-            responses.forEach((r) => {
-                const current = map.get(r.participantId) || {
-                    name: r.participantName,
-                    score: 0,
-                    correct: 0,
-                    totalTimeMs: 0,
-                };
-                current.score += r.scoreAwarded;
-                if (r.isCorrect)
-                    current.correct += 1;
-                current.totalTimeMs += r.timeTakenMs;
-                map.set(r.participantId, current);
-            });
-            const leaderboard = [];
-            map.forEach((data, pId) => {
-                leaderboard.push({
-                    participant_id: pId,
-                    participant_name: data.name,
-                    total_score: data.score,
-                    correct_answers: data.correct,
-                    total_questions: totalQuestions,
-                    total_time_ms: data.totalTimeMs,
-                });
-            });
-            leaderboard.sort((a, b) => {
-                if (b.total_score !== a.total_score)
-                    return b.total_score - a.total_score;
-                return a.total_time_ms - b.total_time_ms;
-            });
-            const rankedLeaderboard = leaderboard.map((item, idx) => ({
-                ...item,
-                rank: idx + 1,
-            }));
+            const rankedLeaderboard = await (0, quizScoringService_1.buildLeaderboard)(activity._id.toString(), activity.eventId.toString());
             res.json({
                 type: "quiz",
                 leaderboard: rankedLeaderboard,

@@ -59,6 +59,8 @@ async function buildLeaderboard(activityId, eventId) {
     });
     const entries = [];
     map.forEach((data, id) => {
+        const avgTimeMs = data.answeredQuestions > 0 ? Math.round(data.totalTimeMs / data.answeredQuestions) : 0;
+        const avgTimeSec = +(avgTimeMs / 1000).toFixed(2);
         entries.push({
             participant_id: id,
             participant_name: data.name,
@@ -66,6 +68,8 @@ async function buildLeaderboard(activityId, eventId) {
             correct_answers: data.correct,
             total_questions: totalQuestions,
             total_time_ms: data.totalTimeMs,
+            average_time_ms: avgTimeMs,
+            average_time_sec: avgTimeSec,
             answered_questions: data.answeredQuestions,
             completion_percentage: totalQuestions > 0
                 ? Math.round((data.answeredQuestions / totalQuestions) * 100)
@@ -79,6 +83,8 @@ async function buildLeaderboard(activityId, eventId) {
             return b.total_score - a.total_score;
         if (b.correct_answers !== a.correct_answers)
             return b.correct_answers - a.correct_answers;
+        if (a.average_time_ms !== b.average_time_ms)
+            return a.average_time_ms - b.average_time_ms;
         if (a.total_time_ms !== b.total_time_ms)
             return a.total_time_ms - b.total_time_ms;
         if (a._firstSubmissionTime !== b._firstSubmissionTime)

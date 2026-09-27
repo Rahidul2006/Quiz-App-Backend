@@ -1,4 +1,4 @@
-﻿import { Activity } from '../models/Activity';
+import { Activity } from '../models/Activity';
 import { QuizResponse } from '../models/QuizResponse';
 import { Participant } from '../models/Participant';
 
@@ -72,6 +72,9 @@ export async function buildLeaderboard(activityId: string, eventId: string) {
 
   const entries: any[] = [];
   map.forEach((data, id) => {
+    const avgTimeMs = data.answeredQuestions > 0 ? Math.round(data.totalTimeMs / data.answeredQuestions) : 0;
+    const avgTimeSec = +(avgTimeMs / 1000).toFixed(2);
+
     entries.push({
       participant_id: id,
       participant_name: data.name,
@@ -79,6 +82,8 @@ export async function buildLeaderboard(activityId: string, eventId: string) {
       correct_answers: data.correct,
       total_questions: totalQuestions,
       total_time_ms: data.totalTimeMs,
+      average_time_ms: avgTimeMs,
+      average_time_sec: avgTimeSec,
       answered_questions: data.answeredQuestions,
       completion_percentage: totalQuestions > 0
         ? Math.round((data.answeredQuestions / totalQuestions) * 100)
@@ -91,6 +96,7 @@ export async function buildLeaderboard(activityId: string, eventId: string) {
   entries.sort((a, b) => {
     if (b.total_score !== a.total_score) return b.total_score - a.total_score;
     if (b.correct_answers !== a.correct_answers) return b.correct_answers - a.correct_answers;
+    if (a.average_time_ms !== b.average_time_ms) return a.average_time_ms - b.average_time_ms;
     if (a.total_time_ms !== b.total_time_ms) return a.total_time_ms - b.total_time_ms;
     if (a._firstSubmissionTime !== b._firstSubmissionTime) return a._firstSubmissionTime - b._firstSubmissionTime;
     return a.participant_id.localeCompare(b.participant_id);
@@ -101,3 +107,4 @@ export async function buildLeaderboard(activityId: string, eventId: string) {
     return { ...rest, rank: index + 1 };
   });
 }
+
