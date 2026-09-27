@@ -4,7 +4,10 @@ import { Event } from "../models/Event";
 import { PollResponse } from "../models/PollResponse";
 import { WordCloudResponse } from "../models/WordCloudResponse";
 import { QuizResponse } from "../models/QuizResponse";
+import { QuizSlot } from "../models/QuizSlot";
 import { emitToEventRoom } from "../sockets/socketHandler";
+import { finalizeQuiz } from "./quizController";
+import { buildLeaderboard } from "../services/quizScoringService";
 
 const normalizeWord = (w: string): string => {
   return w.trim().toLowerCase().replace(/[^\w\s]/gi, "");
@@ -91,6 +94,7 @@ export const deleteActivity = async (req: Request, res: Response): Promise<void>
       await PollResponse.deleteMany({ activityId: id });
       await WordCloudResponse.deleteMany({ activityId: id });
       await QuizResponse.deleteMany({ activityId: id });
+      await QuizSlot.deleteMany({ activityId: id });
       await Activity.findByIdAndDelete(id);
     }
     res.json({ message: "Activity deleted successfully" });
@@ -127,19 +131,56 @@ export const launchActivity = async (req: Request, res: Response): Promise<void>
     if (activity.type === "quiz") {
       activity.activeQuestionIndex = 0;
       activity.settings = { ...activity.settings, quiz_state: "answering" };
+      // Set server-authoritative question timer for question 0
+      const firstQuestion = (activity.questions || [])[0];
+      const qStartedAt = startedAt;
+      const qTimeLimitSec = firstQuestion?.time_limit_sec || 15;
+      const qEndsAt = new Date(qStartedAt.getTime() + qTimeLimitSec * 1000);
+      activity.quizQuestionStartedAt = qStartedAt;
+      activity.quizQuestionEndsAt = qEndsAt;
     }
     await activity.save();
 
     await Event.findByIdAndUpdate(activity.eventId, { activeActivityId: activity._id });
 
+    const activityPayload = { ...activity.toObject(), id: activity._id };
+
     // Emit Socket.IO event: activity:started with authoritative timestamps
     emitToEventRoom(activity.eventId.toString(), "activity:started", {
-      activity: { ...activity.toObject(), id: activity._id },
+      activity: activityPayload,
       serverTime: new Date(),
     });
 
+    // For quiz: also emit quiz:question_changed with server timestamps
+    if (activity.type === "quiz") {
+      const firstQ = (activity.questions || [])[0];
+      emitToEventRoom(activity.eventId.toString(), "quiz:question_changed", {
+        activityId: activity._id,
+        questionIndex: 0,
+        question: firstQ,
+        questionStartedAt: activity.quizQuestionStartedAt,
+        questionEndsAt: activity.quizQuestionEndsAt,
+        serverTime: activity.quizQuestionStartedAt,
+      });
+
+      // Emit initial empty slot state if slots are configured
+      const definedSlots: string[] = activity.settings?.quiz_slots || [];
+      if (definedSlots.length > 0 && activity.settings?.require_slot_selection) {
+        const emptySlots = definedSlots.map((label: string) => ({
+          slotLabel: label,
+          isClaimed: false,
+          participantId: null,
+          participantName: null,
+        }));
+        emitToEventRoom(activity.eventId.toString(), "quiz:slots_updated", {
+          activityId: activity._id.toString(),
+          slots: emptySlots,
+        });
+      }
+    }
+
     res.json({
-      activity: { ...activity.toObject(), id: activity._id },
+      activity: activityPayload,
       serverTime: new Date(),
     });
   } catch (error: any) {
@@ -153,6 +194,13 @@ export const stopActivity = async (req: Request, res: Response): Promise<void> =
     const activity = await Activity.findById(id);
     if (!activity) {
       res.status(404).json({ message: "Activity not found" });
+      return;
+    }
+
+    // Quiz activities get finalized (leaderboard emitted) before being closed
+    if (activity.type === "quiz" && (activity.status === "LIVE" || activity.status === "live" || activity.status === "active")) {
+      await finalizeQuiz(activity);
+      res.json({ message: "Quiz finalized and closed", activity: { ...activity.toObject(), id: activity._id } });
       return;
     }
 
@@ -282,6 +330,7 @@ export const restartActivity = async (req: Request, res: Response): Promise<void
     await PollResponse.deleteMany({ activityId: actIdStr });
     await WordCloudResponse.deleteMany({ activityId: actIdStr });
     await QuizResponse.deleteMany({ activityId: actIdStr });
+    await QuizSlot.deleteMany({ activityId: actIdStr });
 
     const durationSeconds = Math.max(5, Number(activity.duration) || 30);
     const startedAt = new Date();
@@ -327,6 +376,20 @@ export const restartActivity = async (req: Request, res: Response): Promise<void
         activityId: activity._id.toString(),
         leaderboard: [],
       });
+      // Reset slot claims on restart
+      const definedSlots: string[] = activity.settings?.quiz_slots || [];
+      if (definedSlots.length > 0) {
+        const emptySlots = definedSlots.map((label: string) => ({
+          slotLabel: label,
+          isClaimed: false,
+          participantId: null,
+          participantName: null,
+        }));
+        emitToEventRoom(activity.eventId.toString(), "quiz:slots_updated", {
+          activityId: activity._id.toString(),
+          slots: emptySlots,
+        });
+      }
     }
 
     const payload = {
@@ -356,21 +419,32 @@ export const checkAndEndExpiredActivities = async (): Promise<void> => {
 
     for (const activity of activeActivities) {
       if (activity.endsAt && new Date(activity.endsAt).getTime() <= now.getTime()) {
-        activity.status = "ENDED";
-        activity.stoppedAt = now;
-        await activity.save();
+        if (activity.type === "quiz") {
+          // Quiz activities: full finalization (emits quiz:finished + quiz:leaderboard_updated + activity:closed)
+          try {
+            await finalizeQuiz(activity);
+            console.log(`[Lifecycle] Quiz activity ${activity._id} ("${activity.title}") auto-finalized by authoritative timer.`);
+          } catch (quizErr: any) {
+            console.error(`[Lifecycle] Quiz finalization error for ${activity._id}:`, quizErr.message);
+          }
+        } else {
+          // Non-quiz activities: standard end
+          activity.status = "ENDED";
+          activity.stoppedAt = now;
+          await activity.save();
 
-        await Event.findByIdAndUpdate(activity.eventId, { activeActivityId: null });
+          await Event.findByIdAndUpdate(activity.eventId, { activeActivityId: null });
 
-        emitToEventRoom(activity.eventId.toString(), "activity:closed", {
-          activityId: activity._id.toString(),
-          status: "ENDED",
-          stoppedAt: now,
-          reason: "timer_expired",
-          serverTime: now,
-        });
+          emitToEventRoom(activity.eventId.toString(), "activity:closed", {
+            activityId: activity._id.toString(),
+            status: "ENDED",
+            stoppedAt: now,
+            reason: "timer_expired",
+            serverTime: now,
+          });
 
-        console.log(`[Lifecycle] Activity ${activity._id} ("${activity.title}") auto-ENDED by authoritative timer.`);
+          console.log(`[Lifecycle] Activity ${activity._id} ("${activity.title}") auto-ENDED by authoritative timer.`);
+        }
       }
     }
   } catch (e: any) {

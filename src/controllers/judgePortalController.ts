@@ -5,6 +5,8 @@ import { JudgingTeam } from "../models/JudgingTeam";
 import { JudgingCriterion } from "../models/JudgingCriterion";
 import { JudgeAssignment } from "../models/JudgeAssignment";
 import { Evaluation } from "../models/Evaluation";
+import { Judge } from "../models/Judge";
+import { emitToJudgingRoom } from "../sockets/socketHandler";
 
 export const getAssignedTeams = async (req: JudgeAuthRequest, res: Response): Promise<void> => {
   try {
@@ -313,6 +315,18 @@ export const saveDraftEvaluation = async (req: JudgeAuthRequest, res: Response):
         criteriaScores: evaluation.criteriaScores,
       },
     });
+
+    // Emit realtime: draft progress updated
+    emitToJudgingRoom("judging:evaluation_submitted", {
+      roundId: evaluation.roundId.toString(),
+      judgeId,
+      teamId: teamId,
+      status: "DRAFT",
+      submittedAt: new Date(),
+    });
+    emitToJudgingRoom("judging:results_updated", {
+      roundId: evaluation.roundId.toString(),
+    });
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to save draft" });
   }
@@ -455,6 +469,18 @@ export const submitEvaluation = async (req: JudgeAuthRequest, res: Response): Pr
         criteriaScores: evaluation.criteriaScores,
         submittedAt: evaluation.submittedAt,
       },
+    });
+
+    // Emit realtime: evaluation submitted — triggers Admin Results + Judge Dashboard refresh
+    emitToJudgingRoom("judging:evaluation_submitted", {
+      roundId: evaluation.roundId.toString(),
+      judgeId,
+      teamId: teamId,
+      status: "SUBMITTED",
+      submittedAt: evaluation.submittedAt,
+    });
+    emitToJudgingRoom("judging:results_updated", {
+      roundId: evaluation.roundId.toString(),
     });
   } catch (error: any) {
     res.status(500).json({ message: error.message || "Failed to submit evaluation" });

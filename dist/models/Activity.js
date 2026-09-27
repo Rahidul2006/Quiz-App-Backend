@@ -110,6 +110,15 @@ const ActivitySchema = new mongoose_1.Schema({
         type: Number,
         default: 0,
     },
+    // Server-authoritative question timer (quiz only)
+    quizQuestionStartedAt: {
+        type: Date,
+        default: null,
+    },
+    quizQuestionEndsAt: {
+        type: Date,
+        default: null,
+    },
     options: [PollOptionSchema],
     questions: [QuizQuestionSchema],
 }, {

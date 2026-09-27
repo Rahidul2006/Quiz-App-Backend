@@ -7,6 +7,7 @@ const PollResponse_1 = require("../models/PollResponse");
 const WordCloudResponse_1 = require("../models/WordCloudResponse");
 const QuizResponse_1 = require("../models/QuizResponse");
 const socketHandler_1 = require("../sockets/socketHandler");
+const quizController_1 = require("./quizController");
 const normalizeWord = (w) => {
     return w.trim().toLowerCase().replace(/[^\w\s]/gi, "");
 };
@@ -121,16 +122,36 @@ const launchActivity = async (req, res) => {
         if (activity.type === "quiz") {
             activity.activeQuestionIndex = 0;
             activity.settings = { ...activity.settings, quiz_state: "answering" };
+            // Set server-authoritative question timer for question 0
+            const firstQuestion = (activity.questions || [])[0];
+            const qStartedAt = startedAt;
+            const qTimeLimitSec = firstQuestion?.time_limit_sec || 15;
+            const qEndsAt = new Date(qStartedAt.getTime() + qTimeLimitSec * 1000);
+            activity.quizQuestionStartedAt = qStartedAt;
+            activity.quizQuestionEndsAt = qEndsAt;
         }
         await activity.save();
         await Event_1.Event.findByIdAndUpdate(activity.eventId, { activeActivityId: activity._id });
+        const activityPayload = { ...activity.toObject(), id: activity._id };
         // Emit Socket.IO event: activity:started with authoritative timestamps
         (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:started", {
-            activity: { ...activity.toObject(), id: activity._id },
+            activity: activityPayload,
             serverTime: new Date(),
         });
+        // For quiz: also emit quiz:question_changed with server timestamps
+        if (activity.type === "quiz") {
+            const firstQ = (activity.questions || [])[0];
+            (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "quiz:question_changed", {
+                activityId: activity._id,
+                questionIndex: 0,
+                question: firstQ,
+                questionStartedAt: activity.quizQuestionStartedAt,
+                questionEndsAt: activity.quizQuestionEndsAt,
+                serverTime: activity.quizQuestionStartedAt,
+            });
+        }
         res.json({
-            activity: { ...activity.toObject(), id: activity._id },
+            activity: activityPayload,
             serverTime: new Date(),
         });
     }
@@ -145,6 +166,12 @@ const stopActivity = async (req, res) => {
         const activity = await Activity_1.Activity.findById(id);
         if (!activity) {
             res.status(404).json({ message: "Activity not found" });
+            return;
+        }
+        // Quiz activities get finalized (leaderboard emitted) before being closed
+        if (activity.type === "quiz" && (activity.status === "LIVE" || activity.status === "live" || activity.status === "active")) {
+            await (0, quizController_1.finalizeQuiz)(activity);
+            res.json({ message: "Quiz finalized and closed", activity: { ...activity.toObject(), id: activity._id } });
             return;
         }
         const stoppedAt = new Date();
@@ -323,18 +350,31 @@ const checkAndEndExpiredActivities = async () => {
         });
         for (const activity of activeActivities) {
             if (activity.endsAt && new Date(activity.endsAt).getTime() <= now.getTime()) {
-                activity.status = "ENDED";
-                activity.stoppedAt = now;
-                await activity.save();
-                await Event_1.Event.findByIdAndUpdate(activity.eventId, { activeActivityId: null });
-                (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:closed", {
-                    activityId: activity._id.toString(),
-                    status: "ENDED",
-                    stoppedAt: now,
-                    reason: "timer_expired",
-                    serverTime: now,
-                });
-                console.log(`[Lifecycle] Activity ${activity._id} ("${activity.title}") auto-ENDED by authoritative timer.`);
+                if (activity.type === "quiz") {
+                    // Quiz activities: full finalization (emits quiz:finished + quiz:leaderboard_updated + activity:closed)
+                    try {
+                        await (0, quizController_1.finalizeQuiz)(activity);
+                        console.log(`[Lifecycle] Quiz activity ${activity._id} ("${activity.title}") auto-finalized by authoritative timer.`);
+                    }
+                    catch (quizErr) {
+                        console.error(`[Lifecycle] Quiz finalization error for ${activity._id}:`, quizErr.message);
+                    }
+                }
+                else {
+                    // Non-quiz activities: standard end
+                    activity.status = "ENDED";
+                    activity.stoppedAt = now;
+                    await activity.save();
+                    await Event_1.Event.findByIdAndUpdate(activity.eventId, { activeActivityId: null });
+                    (0, socketHandler_1.emitToEventRoom)(activity.eventId.toString(), "activity:closed", {
+                        activityId: activity._id.toString(),
+                        status: "ENDED",
+                        stoppedAt: now,
+                        reason: "timer_expired",
+                        serverTime: now,
+                    });
+                    console.log(`[Lifecycle] Activity ${activity._id} ("${activity.title}") auto-ENDED by authoritative timer.`);
+                }
             }
         }
     }

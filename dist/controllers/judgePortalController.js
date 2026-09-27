@@ -6,6 +6,7 @@ const JudgingTeam_1 = require("../models/JudgingTeam");
 const JudgingCriterion_1 = require("../models/JudgingCriterion");
 const JudgeAssignment_1 = require("../models/JudgeAssignment");
 const Evaluation_1 = require("../models/Evaluation");
+const socketHandler_1 = require("../sockets/socketHandler");
 const getAssignedTeams = async (req, res) => {
     try {
         if (!req.judge) {
@@ -278,6 +279,17 @@ const saveDraftEvaluation = async (req, res) => {
                 criteriaScores: evaluation.criteriaScores,
             },
         });
+        // Emit realtime: draft progress updated
+        (0, socketHandler_1.emitToJudgingRoom)("judging:evaluation_submitted", {
+            roundId: evaluation.roundId.toString(),
+            judgeId,
+            teamId: teamId,
+            status: "DRAFT",
+            submittedAt: new Date(),
+        });
+        (0, socketHandler_1.emitToJudgingRoom)("judging:results_updated", {
+            roundId: evaluation.roundId.toString(),
+        });
     }
     catch (error) {
         res.status(500).json({ message: error.message || "Failed to save draft" });
@@ -402,6 +414,17 @@ const submitEvaluation = async (req, res) => {
                 criteriaScores: evaluation.criteriaScores,
                 submittedAt: evaluation.submittedAt,
             },
+        });
+        // Emit realtime: evaluation submitted — triggers Admin Results + Judge Dashboard refresh
+        (0, socketHandler_1.emitToJudgingRoom)("judging:evaluation_submitted", {
+            roundId: evaluation.roundId.toString(),
+            judgeId,
+            teamId: teamId,
+            status: "SUBMITTED",
+            submittedAt: evaluation.submittedAt,
+        });
+        (0, socketHandler_1.emitToJudgingRoom)("judging:results_updated", {
+            roundId: evaluation.roundId.toString(),
         });
     }
     catch (error) {
